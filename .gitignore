@@ -1,0 +1,9 @@
+target/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.env
+data/*.session*
+data/state.json
+*.log
+.DS_Store

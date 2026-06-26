@@ -1,0 +1,24 @@
+[package]
+name = "vipads-server"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.100"
+axum = { version = "0.8.7", features = ["macros"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+dotenvy = "0.15.7"
+grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", rev = "bafe16b9d9e8940f5a0d94c7466171b6c754144e", package = "grammers-client" }
+grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git", rev = "bafe16b9d9e8940f5a0d94c7466171b6c754144e", package = "grammers-mtsender" }
+grammers-session = { git = "https://codeberg.org/Lonami/grammers.git", rev = "bafe16b9d9e8940f5a0d94c7466171b6c754144e", package = "grammers-session" }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "bafe16b9d9e8940f5a0d94c7466171b6c754144e", package = "grammers-tl-types" }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["full"] }
+tower-http = { version = "0.6.7", features = ["cors", "fs", "trace"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+uuid = { version = "1.19.0", features = ["serde", "v4"] }
