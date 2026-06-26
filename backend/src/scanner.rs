@@ -1,5 +1,7 @@
 use crate::api::AppState;
-use crate::models::{AdResult, PanelLog, ScanResponse, Settings};
+use crate::models::{
+    AdResult, DEFAULT_SMMMAIN_SERVICE_ID, KeywordRule, PanelLog, ScanResponse, Settings,
+};
 use crate::telegram::normalize_channel_ref;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -88,7 +90,11 @@ async fn scan_inner(state: &AppState, force: bool) -> Result<ScanResponse> {
 
     let now = Utc::now();
     let active_keywords = active_keyword_count(&settings);
-    let keywords = selected_keywords(&settings, now, force);
+    let order_keys = selected_order_keys(&settings, now, force);
+    let keywords = order_keys
+        .iter()
+        .map(|keyword| keyword.text.clone())
+        .collect::<Vec<_>>();
 
     if keywords.is_empty() {
         let message = if active_keywords == 0 {
@@ -183,24 +189,30 @@ async fn process_ad_actions(
             .or_else(|| normalize_channel_ref(&ad.url));
         let white_match = find_list_match(target.as_deref(), &ad.url, &settings.whitelist_channels);
         let black_match = find_list_match(target.as_deref(), &ad.url, &settings.blacklist_channels);
-        let keyword = ad
-            .matched_keywords
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "all".to_string());
+        let order_keys = matched_order_keys(settings, &ad.matched_keywords);
+        let display_keywords = if order_keys.is_empty() {
+            "all".to_string()
+        } else {
+            order_keys
+                .iter()
+                .map(|key| key.text.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
 
         if let Some(matched) = white_match {
             let mut log = base_ad_log(
                 "warning",
                 "Order yuborilmadi: oq ro'yxat",
                 format!(
-                    "{} oq ro'yxatda bor. Key: {keyword}. Qora ro'yxat mos kelsa ham order yuborilmaydi.",
+                    "{} oq ro'yxatda bor. Key: {display_keywords}. Qora ro'yxat mos kelsa ham order yuborilmaydi.",
                     matched.display
                 ),
                 ad,
-                &keyword,
+                &display_keywords,
                 Some(&matched),
             );
+            log.order_link = order_keys.first().map(|key| key.text.clone());
             log.raw_response = Some("SMMMAIN chaqirilmadi, sabab: oq ro'yxat".to_string());
             logs.push(log);
             continue;
@@ -210,63 +222,65 @@ async fn process_ad_actions(
             let mut log = base_ad_log(
                 "info",
                 "Order yuborilmadi: ro'yxatda yo'q",
-                format!("Ads topildi, lekin target kanal qora ro'yxatda emas. Key: {keyword}."),
+                format!(
+                    "Ads topildi, lekin target kanal qora ro'yxatda emas. Key: {display_keywords}."
+                ),
                 ad,
-                &keyword,
+                &display_keywords,
                 None,
             );
+            log.order_link = order_keys.first().map(|key| key.text.clone());
             log.raw_response =
                 Some("SMMMAIN chaqirilmadi, sabab: qora ro'yxatda moslik yo'q".to_string());
             logs.push(log);
             continue;
         };
 
-        let mut log = base_ad_log(
-            "info",
-            "Qora ro'yxat mos keldi",
-            format!(
-                "{} qora ro'yxatda topildi. SMMMAIN service {} ga order yuborilmoqda. Quality: {}.",
-                matched.display,
-                state.smmmain.service_id(),
-                settings.order_quantity
-            ),
-            ad,
-            &keyword,
-            Some(&matched),
-        );
-        log.quantity = Some(settings.order_quantity);
-        log.service_id = Some(state.smmmain.service_id());
+        for order_key in order_keys {
+            let mut log = base_ad_log(
+                "info",
+                "Qora ro'yxat mos keldi",
+                format!(
+                    "{} qora ro'yxatda topildi. SMMMAIN service {} ga order yuborilmoqda. Link: {}. Quality: {}.",
+                    matched.display, order_key.service_id, order_key.text, order_key.quantity
+                ),
+                ad,
+                &order_key.text,
+                Some(&matched),
+            );
+            log.order_link = Some(order_key.text.clone());
+            log.quantity = Some(order_key.quantity);
+            log.service_id = Some(order_key.service_id);
 
-        match state
-            .smmmain
-            .send_order(&matched.order_link, settings.order_quantity)
-            .await
-        {
-            Ok(outcome) => {
-                log.level = "success".to_string();
-                log.title = "Order yuborildi".to_string();
-                log.message = format!(
-                    "{} uchun SMMMAIN order yuborildi. Service: {}, quality: {}.",
-                    matched.display,
-                    state.smmmain.service_id(),
-                    settings.order_quantity
-                );
-                log.order_id = outcome.order_id;
-                log.raw_response = Some(outcome.raw_response);
+            match state
+                .smmmain
+                .send_order(order_key.service_id, &order_key.text, order_key.quantity)
+                .await
+            {
+                Ok(outcome) => {
+                    log.level = "success".to_string();
+                    log.title = "Order yuborildi".to_string();
+                    log.message = format!(
+                        "{} uchun SMMMAIN order yuborildi. Link: {}. Service: {}, quality: {}.",
+                        matched.display, order_key.text, order_key.service_id, order_key.quantity
+                    );
+                    log.order_id = outcome.order_id;
+                    log.raw_response = Some(outcome.raw_response);
+                }
+                Err(err) => {
+                    log.level = "error".to_string();
+                    log.title = "Order yuborishda xato".to_string();
+                    log.message = format!(
+                        "{} qora ro'yxatda topildi, lekin SMMMAIN order yuborilmadi. Link: {}. Xato: {err}",
+                        matched.display, order_key.text
+                    );
+                    log.raw_response = Some(err.to_string());
+                    state.runtime.write().await.last_error = Some(log.message.clone());
+                }
             }
-            Err(err) => {
-                log.level = "error".to_string();
-                log.title = "Order yuborishda xato".to_string();
-                log.message = format!(
-                    "{} qora ro'yxatda topildi, lekin SMMMAIN order yuborilmadi: {err}",
-                    matched.display
-                );
-                log.raw_response = Some(err.to_string());
-                state.runtime.write().await.last_error = Some(log.message.clone());
-            }
+
+            logs.push(log);
         }
-
-        logs.push(log);
     }
 
     logs
@@ -297,6 +311,13 @@ fn base_ad_log(
 struct ChannelMatch {
     display: String,
     order_link: String,
+}
+
+#[derive(Clone, Debug)]
+struct OrderKey {
+    text: String,
+    service_id: u64,
+    quantity: u64,
 }
 
 fn find_list_match(target: Option<&str>, ad_url: &str, list: &[String]) -> Option<ChannelMatch> {
@@ -361,13 +382,18 @@ fn active_keyword_count(settings: &Settings) -> usize {
         .count()
 }
 
-fn selected_keywords(settings: &Settings, now: DateTime<Utc>, force: bool) -> Vec<String> {
+fn selected_order_keys(settings: &Settings, now: DateTime<Utc>, force: bool) -> Vec<OrderKey> {
     if settings.keyword_rules.is_empty() {
         return settings
             .keywords
             .iter()
             .map(|keyword| keyword.trim().to_string())
             .filter(|keyword| !keyword.is_empty())
+            .map(|text| OrderKey {
+                text,
+                service_id: DEFAULT_SMMMAIN_SERVICE_ID,
+                quantity: settings.order_quantity,
+            })
             .collect();
     }
 
@@ -376,7 +402,50 @@ fn selected_keywords(settings: &Settings, now: DateTime<Utc>, force: bool) -> Ve
         .iter()
         .filter(|rule| rule.enabled)
         .filter(|rule| force || rule.next_check_at.map(|next| next <= now).unwrap_or(true))
-        .map(|rule| rule.text.trim().to_string())
-        .filter(|keyword| !keyword.is_empty())
+        .filter_map(order_key_from_rule)
         .collect()
+}
+
+fn matched_order_keys(settings: &Settings, matched_keywords: &[String]) -> Vec<OrderKey> {
+    if matched_keywords.is_empty() {
+        return Vec::new();
+    }
+
+    if settings.keyword_rules.is_empty() {
+        return matched_keywords
+            .iter()
+            .map(|keyword| keyword.trim().to_string())
+            .filter(|keyword| !keyword.is_empty())
+            .map(|text| OrderKey {
+                text,
+                service_id: DEFAULT_SMMMAIN_SERVICE_ID,
+                quantity: settings.order_quantity,
+            })
+            .collect();
+    }
+
+    matched_keywords
+        .iter()
+        .filter_map(|keyword| {
+            let wanted = keyword.trim();
+            settings
+                .keyword_rules
+                .iter()
+                .find(|rule| rule.text.trim().eq_ignore_ascii_case(wanted))
+                .and_then(order_key_from_rule)
+        })
+        .collect()
+}
+
+fn order_key_from_rule(rule: &KeywordRule) -> Option<OrderKey> {
+    let text = rule.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(OrderKey {
+        text: text.to_string(),
+        service_id: rule.service_id.max(1),
+        quantity: rule.order_quantity.max(1),
+    })
 }

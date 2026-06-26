@@ -1,6 +1,8 @@
 export type KeywordRule = {
   text: string;
   interval_seconds: number;
+  order_quantity: number;
+  service_id: number;
   enabled: boolean;
   last_checked_at?: string | null;
   next_check_at?: string | null;

@@ -78,6 +78,8 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [keywordInput, setKeywordInput] = useState('');
   const [keywordIntervalInput, setKeywordIntervalInput] = useState('5');
+  const [keywordQuantityInput, setKeywordQuantityInput] = useState('100');
+  const [keywordServiceIdInput, setKeywordServiceIdInput] = useState('875');
   const [channelInput, setChannelInput] = useState('');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [whitelistInput, setWhitelistInput] = useState('');
@@ -147,22 +149,26 @@ function App() {
     }
   };
 
-  const saveSettings = async () => {
+  const persistSettings = async (nextSettings: Settings, successMessage: string) => {
     setBusy(true);
     setError(null);
     try {
       const clean = await apiFetch<Settings>('/settings', token, {
         method: 'PUT',
-        body: JSON.stringify(settings)
+        body: JSON.stringify(nextSettings)
       });
       setSettings(normalizeSettings(clean));
-      setNotice('Sozlamalar saqlandi');
+      setNotice(successMessage);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Saqlash xato');
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveSettings = async () => {
+    await persistSettings(settings, 'Sozlamalar saqlandi');
   };
 
   const setScannerEnabled = async (enabled: boolean) => {
@@ -190,7 +196,7 @@ function App() {
       .map((rule) => rule.text.trim())
   });
 
-  const addKeywordRules = () => {
+  const addKeywordRules = async () => {
     const items = keywordInput
       .split(',')
       .map((item) => item.trim())
@@ -198,29 +204,34 @@ function App() {
     if (!items.length) return;
 
     const interval = clampNumber(Number(keywordIntervalInput), 2, 86400, 5);
-    setSettings((current) => {
-      const existing = new Set(current.keyword_rules.map((rule) => rule.text.toLowerCase()));
-      const nextRules = [...current.keyword_rules];
+    const quantity = clampNumber(Number(keywordQuantityInput), 1, 1000000, settings.order_quantity || 100);
+    const serviceId = clampNumber(Number(keywordServiceIdInput), 1, 10000000, 875);
+    const existing = new Set(settings.keyword_rules.map((rule) => rule.text.toLowerCase()));
+    const nextRules = [...settings.keyword_rules];
 
-      for (const item of items) {
-        if (!existing.has(item.toLowerCase())) {
-          nextRules.push({
-            text: item,
-            interval_seconds: interval,
-            enabled: true,
-            last_checked_at: null,
-            next_check_at: null
-          });
-          existing.add(item.toLowerCase());
-        }
+    for (const item of items) {
+      if (!existing.has(item.toLowerCase())) {
+        nextRules.push({
+          text: item,
+          interval_seconds: interval,
+          order_quantity: quantity,
+          service_id: serviceId,
+          enabled: true,
+          last_checked_at: null,
+          next_check_at: null
+        });
+        existing.add(item.toLowerCase());
       }
+    }
 
-      return {
-        ...current,
-        ...syncKeywordSettings(nextRules)
-      };
-    });
+    const nextSettings = {
+      ...settings,
+      ...syncKeywordSettings(nextRules)
+    };
+
+    setSettings(nextSettings);
     setKeywordInput('');
+    await persistSettings(nextSettings, 'Key qo\'shildi va saqlandi');
   };
 
   const updateKeywordRule = (index: number, patch: Partial<KeywordRule>) => {
@@ -255,7 +266,7 @@ function App() {
     });
   };
 
-  const addListItem = (
+  const addListItem = async (
     field: 'channels' | 'blacklist_channels' | 'whitelist_channels',
     value: string
   ) => {
@@ -264,23 +275,27 @@ function App() {
       .map((item) => item.trim())
       .filter(Boolean);
     if (!items.length) return;
-    setSettings((current) => ({
-      ...current,
-      [field]: Array.from(new Set([...current[field], ...items]))
-    }));
+    const nextSettings = {
+      ...settings,
+      [field]: Array.from(new Set([...settings[field], ...items]))
+    };
+    setSettings(nextSettings);
     if (field === 'channels') setChannelInput('');
     if (field === 'blacklist_channels') setBlacklistInput('');
     if (field === 'whitelist_channels') setWhitelistInput('');
+    await persistSettings(nextSettings, 'Ro\'yxat saqlandi');
   };
 
-  const removeListItem = (
+  const removeListItem = async (
     field: 'channels' | 'blacklist_channels' | 'whitelist_channels',
     value: string
   ) => {
-    setSettings((current) => ({
-      ...current,
-      [field]: current[field].filter((item) => item !== value)
-    }));
+    const nextSettings = {
+      ...settings,
+      [field]: settings[field].filter((item) => item !== value)
+    };
+    setSettings(nextSettings);
+    await persistSettings(nextSettings, 'Ro\'yxat saqlandi');
   };
 
   const requestCode = async () => {
@@ -544,6 +559,10 @@ function App() {
                     setKeywordInput={setKeywordInput}
                     keywordIntervalInput={keywordIntervalInput}
                     setKeywordIntervalInput={setKeywordIntervalInput}
+                    keywordQuantityInput={keywordQuantityInput}
+                    setKeywordQuantityInput={setKeywordQuantityInput}
+                    keywordServiceIdInput={keywordServiceIdInput}
+                    setKeywordServiceIdInput={setKeywordServiceIdInput}
                     channelInput={channelInput}
                     setChannelInput={setChannelInput}
                     blacklistInput={blacklistInput}
@@ -646,6 +665,10 @@ type SettingsPanelProps = {
   setKeywordInput: (value: string) => void;
   keywordIntervalInput: string;
   setKeywordIntervalInput: (value: string) => void;
+  keywordQuantityInput: string;
+  setKeywordQuantityInput: (value: string) => void;
+  keywordServiceIdInput: string;
+  setKeywordServiceIdInput: (value: string) => void;
   channelInput: string;
   setChannelInput: (value: string) => void;
   blacklistInput: string;
@@ -675,6 +698,10 @@ function SettingsPanel(props: SettingsPanelProps) {
     setKeywordInput,
     keywordIntervalInput,
     setKeywordIntervalInput,
+    keywordQuantityInput,
+    setKeywordQuantityInput,
+    keywordServiceIdInput,
+    setKeywordServiceIdInput,
     channelInput,
     setChannelInput,
     blacklistInput,
@@ -692,7 +719,7 @@ function SettingsPanel(props: SettingsPanelProps) {
 
   return (
     <Stack spacing={3}>
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '220px 1fr 1fr 1fr' }, gap: 2 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '220px 1fr 1fr' }, gap: 2 }}>
         <Paper variant="outlined" sx={{ p: 2 }}>
           <FormControlLabel
             control={
@@ -715,16 +742,6 @@ function SettingsPanel(props: SettingsPanelProps) {
           fullWidth
         />
         <TextField
-          label="Quality"
-          type="number"
-          value={settings.order_quantity}
-          onChange={(event) =>
-            setSettings((current) => ({ ...current, order_quantity: Number(event.target.value) }))
-          }
-          slotProps={{ htmlInput: { min: 1, max: 1000000 } }}
-          fullWidth
-        />
-        <TextField
           label="Natija tarixi limiti"
           type="number"
           value={settings.max_results}
@@ -742,6 +759,10 @@ function SettingsPanel(props: SettingsPanelProps) {
         setKeywordInput={setKeywordInput}
         intervalInput={keywordIntervalInput}
         setIntervalInput={setKeywordIntervalInput}
+        quantityInput={keywordQuantityInput}
+        setQuantityInput={setKeywordQuantityInput}
+        serviceIdInput={keywordServiceIdInput}
+        setServiceIdInput={setKeywordServiceIdInput}
         onAdd={addKeywordRules}
         onUpdate={updateKeywordRule}
         onRemove={removeKeywordRule}
@@ -794,6 +815,10 @@ function KeywordRulesEditor({
   setKeywordInput,
   intervalInput,
   setIntervalInput,
+  quantityInput,
+  setQuantityInput,
+  serviceIdInput,
+  setServiceIdInput,
   onAdd,
   onUpdate,
   onRemove
@@ -803,6 +828,10 @@ function KeywordRulesEditor({
   setKeywordInput: (value: string) => void;
   intervalInput: string;
   setIntervalInput: (value: string) => void;
+  quantityInput: string;
+  setQuantityInput: (value: string) => void;
+  serviceIdInput: string;
+  setServiceIdInput: (value: string) => void;
   onAdd: () => void;
   onUpdate: (index: number, patch: Partial<KeywordRule>) => void;
   onRemove: (index: number) => void;
@@ -813,7 +842,7 @@ function KeywordRulesEditor({
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: { xs: '1fr', sm: '1fr 160px auto' },
+          gridTemplateColumns: { xs: '1fr', md: '1.5fr 130px 130px 130px auto' },
           gap: 1
         }}
       >
@@ -840,18 +869,42 @@ function KeywordRulesEditor({
           }}
           fullWidth
         />
+        <TextField
+          label="Quality"
+          value={quantityInput}
+          onChange={(event) => setQuantityInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') onAdd();
+          }}
+          type="number"
+          slotProps={{ htmlInput: { min: 1, max: 1000000 } }}
+          fullWidth
+        />
+        <TextField
+          label="SMM ID"
+          value={serviceIdInput}
+          onChange={(event) => setServiceIdInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') onAdd();
+          }}
+          type="number"
+          slotProps={{ htmlInput: { min: 1 } }}
+          fullWidth
+        />
         <Button variant="outlined" onClick={onAdd} startIcon={<Plus size={18} />} sx={{ minWidth: 118 }}>
           Qo'shish
         </Button>
       </Box>
 
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small" sx={{ minWidth: 760 }}>
+        <Table size="small" sx={{ minWidth: 980 }}>
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: 88 }}>Holat</TableCell>
               <TableCell>Key</TableCell>
               <TableCell sx={{ width: 150 }}>Kutish</TableCell>
+              <TableCell sx={{ width: 130 }}>Quality</TableCell>
+              <TableCell sx={{ width: 130 }}>SMM ID</TableCell>
               <TableCell sx={{ width: 160 }}>Oxirgi</TableCell>
               <TableCell sx={{ width: 160 }}>Keyingi</TableCell>
               <TableCell align="right" sx={{ width: 72 }} />
@@ -887,6 +940,26 @@ function KeywordRulesEditor({
                     fullWidth
                   />
                 </TableCell>
+                <TableCell>
+                  <TextField
+                    value={rule.order_quantity}
+                    onChange={(event) => onUpdate(index, { order_quantity: Number(event.target.value) })}
+                    type="number"
+                    size="small"
+                    slotProps={{ htmlInput: { min: 1, max: 1000000 } }}
+                    fullWidth
+                  />
+                </TableCell>
+                <TableCell>
+                  <TextField
+                    value={rule.service_id}
+                    onChange={(event) => onUpdate(index, { service_id: Number(event.target.value) })}
+                    type="number"
+                    size="small"
+                    slotProps={{ htmlInput: { min: 1 } }}
+                    fullWidth
+                  />
+                </TableCell>
                 <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(rule.last_checked_at)}</TableCell>
                 <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(rule.next_check_at)}</TableCell>
                 <TableCell align="right">
@@ -900,7 +973,7 @@ function KeywordRulesEditor({
             ))}
             {!rules.length && (
               <TableRow>
-                <TableCell colSpan={6}>
+                <TableCell colSpan={8}>
                   <Box
                     sx={{
                       p: 3,
@@ -1324,10 +1397,16 @@ function formatChannel(value?: string | null) {
 
 function normalizeSettings(settings: Settings): Settings {
   const keywordRules = settings.keyword_rules?.length
-    ? settings.keyword_rules
+    ? settings.keyword_rules.map((rule) => ({
+        ...rule,
+        order_quantity: rule.order_quantity || settings.order_quantity || 100,
+        service_id: rule.service_id || 875
+      }))
     : settings.keywords.map((keyword) => ({
         text: keyword,
         interval_seconds: settings.interval_seconds || 5,
+        order_quantity: settings.order_quantity || 100,
+        service_id: 875,
         enabled: true,
         last_checked_at: null,
         next_check_at: null

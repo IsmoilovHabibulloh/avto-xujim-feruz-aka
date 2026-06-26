@@ -32,20 +32,26 @@ impl SmmMainService {
         }
     }
 
-    pub fn service_id(&self) -> u64 {
-        self.service_id
-    }
-
     pub fn is_configured(&self) -> bool {
         !self.api_key.trim().is_empty()
     }
 
-    pub async fn send_order(&self, link: &str, quantity: u64) -> Result<SmmOrderOutcome> {
+    pub async fn send_order(
+        &self,
+        service_id: u64,
+        link: &str,
+        quantity: u64,
+    ) -> Result<SmmOrderOutcome> {
         if !self.is_configured() {
             bail!("SMMMAIN_API_KEY .env ichida kiritilmagan");
         }
 
-        let service = self.service_id.to_string();
+        let service = if service_id == 0 {
+            self.service_id
+        } else {
+            service_id
+        }
+        .to_string();
         let quantity = quantity.to_string();
         let form = [
             ("key", self.api_key.trim()),

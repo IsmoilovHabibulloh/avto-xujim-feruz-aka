@@ -1,4 +1,7 @@
-use crate::models::{AdResult, KeywordRule, PanelLog, PersistedState, Settings, TelegramSettings};
+use crate::models::{
+    AdResult, DEFAULT_SMMMAIN_SERVICE_ID, KeywordRule, PanelLog, PersistedState, Settings,
+    TelegramSettings,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
@@ -240,6 +243,10 @@ fn normalize_keyword_rules(
         }
 
         rule.interval_seconds = rule.interval_seconds.clamp(2, 86_400);
+        rule.order_quantity = rule.order_quantity.clamp(1, 1_000_000);
+        if rule.service_id == 0 {
+            rule.service_id = DEFAULT_SMMMAIN_SERVICE_ID;
+        }
         if rule.enabled {
             rule.next_check_at = rule.last_checked_at.map(|last_checked_at| {
                 last_checked_at + Duration::seconds(rule.interval_seconds as i64)

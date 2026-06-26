@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub const DEFAULT_SMMMAIN_SERVICE_ID: u64 = 875;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_enabled")]
@@ -45,6 +47,10 @@ pub struct KeywordRule {
     pub text: String,
     #[serde(default = "default_interval_seconds")]
     pub interval_seconds: u64,
+    #[serde(default = "default_order_quantity")]
+    pub order_quantity: u64,
+    #[serde(default = "default_smmmain_service_id")]
+    pub service_id: u64,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -58,6 +64,8 @@ impl KeywordRule {
         Self {
             text,
             interval_seconds,
+            order_quantity: default_order_quantity(),
+            service_id: default_smmmain_service_id(),
             enabled: true,
             last_checked_at: None,
             next_check_at: None,
@@ -79,6 +87,10 @@ fn default_max_results() -> usize {
 
 fn default_order_quantity() -> u64 {
     100
+}
+
+fn default_smmmain_service_id() -> u64 {
+    DEFAULT_SMMMAIN_SERVICE_ID
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
