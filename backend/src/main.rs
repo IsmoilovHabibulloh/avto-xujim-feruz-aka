@@ -14,8 +14,9 @@ use axum::Router;
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -37,6 +38,7 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(Store::load(state_path).await?);
     seed_telegram_from_env(&store).await?;
+    migrate_legacy_session(&store, Path::new(&session_path)).await?;
 
     let app_state = AppState {
         store,
@@ -44,9 +46,25 @@ async fn main() -> Result<()> {
         smmmain: Arc::new(SmmMainService::new(smmmain_api_key, smmmain_api_url, 875)),
         sessions: Arc::new(RwLock::new(HashMap::new())),
         runtime: Arc::new(RwLock::new(RuntimeInfo::default())),
+        rr: Arc::new(AtomicUsize::new(0)),
         admin_username: env::var("ADMIN_USERNAME").unwrap_or_else(|_| "Izzatillo".to_string()),
         admin_password: env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "Izzatilloaka".to_string()),
     };
+
+    // Mavjud akkauntlarni fonда ulab qo'yamiz (status to'g'ri ko'rinishi uchun).
+    {
+        let warm = app_state.clone();
+        tokio::spawn(async move {
+            if let Some(api_id) = warm.store.telegram_settings().await.api_id {
+                for account in warm.store.accounts().await {
+                    let _ = warm
+                        .telegram
+                        .ensure_account_client(&account.id, api_id)
+                        .await;
+                }
+            }
+        });
+    }
 
     tokio::spawn(scanner::scanner_loop(app_state.clone()));
 
@@ -95,6 +113,51 @@ async fn seed_telegram_from_env(store: &Store) -> Result<()> {
     }
 
     store.update_telegram(settings).await?;
+    Ok(())
+}
+
+/// Eski (bitta) userbot sessiyasini ko'p-akkaunt ro'yxatidagi birinchi akkauntga
+/// ko'chiradi. Faqat akkauntlar bo'sh bo'lsa va eski sessiya fayli mavjud bo'lsa ishlaydi.
+async fn migrate_legacy_session(store: &Store, legacy_session: &Path) -> Result<()> {
+    if !store.accounts().await.is_empty() {
+        return Ok(());
+    }
+    if !legacy_session.exists() {
+        return Ok(());
+    }
+    let settings = store.telegram_settings().await;
+    if settings.api_id.is_none() {
+        return Ok(());
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = legacy_session.parent().unwrap_or_else(|| Path::new("data"));
+    let target = dir.join(format!("userbot-{id}.session"));
+    let legacy_str = legacy_session.to_string_lossy().to_string();
+    let target_str = target.to_string_lossy().to_string();
+    for suffix in ["", "-wal", "-shm"] {
+        let from = format!("{legacy_str}{suffix}");
+        let to = format!("{target_str}{suffix}");
+        if Path::new(&from).exists() {
+            let _ = tokio::fs::rename(&from, &to).await;
+        }
+    }
+
+    let label = settings
+        .phone
+        .clone()
+        .unwrap_or_else(|| "Akkaunt 1".to_string());
+    store
+        .add_account(crate::models::TelegramAccount {
+            id,
+            label: Some(label),
+            username: None,
+            created_at: chrono::Utc::now(),
+            last_used_at: None,
+            flood_until: None,
+        })
+        .await?;
+    tracing::info!("eski userbot sessiyasi yangi akkauntga ko'chirildi");
     Ok(())
 }
 

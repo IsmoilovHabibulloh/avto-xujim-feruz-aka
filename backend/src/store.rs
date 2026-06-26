@@ -1,6 +1,6 @@
 use crate::models::{
     AdResult, DEFAULT_SMMMAIN_SERVICE_ID, KeywordRule, OrderRecord, PanelLog, PersistedState,
-    Settings, TelegramSettings,
+    Settings, TelegramAccount, TelegramSettings,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -203,6 +203,54 @@ impl Store {
         }
 
         Ok(())
+    }
+
+    pub async fn accounts(&self) -> Vec<TelegramAccount> {
+        self.inner.read().await.accounts.clone()
+    }
+
+    pub async fn add_account(&self, account: TelegramAccount) -> Result<()> {
+        {
+            let mut state = self.inner.write().await;
+            state.accounts.push(account);
+        }
+        self.save().await
+    }
+
+    pub async fn remove_account(&self, id: &str) -> Result<()> {
+        {
+            let mut state = self.inner.write().await;
+            state.accounts.retain(|account| account.id != id);
+        }
+        self.save().await
+    }
+
+    pub async fn set_account_flood(
+        &self,
+        id: &str,
+        until: DateTime<Utc>,
+    ) -> Result<()> {
+        let changed = {
+            let mut state = self.inner.write().await;
+            if let Some(account) = state.accounts.iter_mut().find(|a| a.id == id) {
+                account.flood_until = Some(until);
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.save().await?;
+        }
+        Ok(())
+    }
+
+    /// Akkauntning oxirgi ishlatilgan vaqtini xotirada yangilaydi (diskka yozmaydi).
+    pub async fn touch_account_used(&self, id: &str, at: DateTime<Utc>) {
+        let mut state = self.inner.write().await;
+        if let Some(account) = state.accounts.iter_mut().find(|a| a.id == id) {
+            account.last_used_at = Some(at);
+        }
     }
 
     async fn save(&self) -> Result<()> {

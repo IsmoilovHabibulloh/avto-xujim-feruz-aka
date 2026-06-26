@@ -135,6 +135,8 @@ pub struct PersistedState {
     pub logs: Vec<PanelLog>,
     #[serde(default)]
     pub orders: HashMap<String, OrderRecord>,
+    #[serde(default)]
+    pub accounts: Vec<TelegramAccount>,
 }
 
 impl Default for PersistedState {
@@ -146,8 +148,25 @@ impl Default for PersistedState {
             seen: HashSet::new(),
             logs: Vec::new(),
             orders: HashMap::new(),
+            accounts: Vec::new(),
         }
     }
+}
+
+/// Ulangan Telegram userbot akkaunti (QR orqali qo'shilgan).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TelegramAccount {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// Shu vaqtgacha akkaunt FLOOD_WAIT sababli "dam oladi" (so'rov yuborilmaydi).
+    #[serde(default)]
+    pub flood_until: Option<DateTime<Utc>>,
 }
 
 /// Har bir order linki (key matni) uchun oxirgi yuborilgan order holati.
@@ -260,26 +279,6 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct TelegramRequestCode {
-    pub api_id: i32,
-    pub api_hash: String,
-    pub phone: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct TelegramVerifyCode {
-    pub code: Option<String>,
-    pub password: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct TelegramAuthResponse {
-    pub connected: bool,
-    pub waiting_for: Option<String>,
-    pub message: String,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct ScanResponse {
     pub added: usize,
@@ -296,4 +295,51 @@ pub struct DashboardResponse {
     pub status: RuntimeStatus,
     pub results: Vec<AdResult>,
     pub logs: Vec<PanelLog>,
+    pub accounts: Vec<AccountStatus>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AccountStatus {
+    pub id: String,
+    pub label: Option<String>,
+    pub username: Option<String>,
+    pub connected: bool,
+    pub flooded: bool,
+    pub flood_until: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CredentialsRequest {
+    pub api_id: i32,
+    pub api_hash: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct QrStartResponse {
+    pub account_id: String,
+    pub qr_url: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AccountIdRequest {
+    pub account_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QrPasswordRequest {
+    pub account_id: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct QrPollResponse {
+    pub account_id: String,
+    /// "waiting" | "password" | "connected" | "error"
+    pub status: String,
+    pub qr_url: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub message: String,
 }

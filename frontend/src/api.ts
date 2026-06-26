@@ -80,6 +80,17 @@ export type SmmBalance = {
   checked_at: string;
 };
 
+export type AccountStatus = {
+  id: string;
+  label?: string | null;
+  username?: string | null;
+  connected: boolean;
+  flooded: boolean;
+  flood_until?: string | null;
+  created_at: string;
+  last_used_at?: string | null;
+};
+
 export type Dashboard = {
   settings: Settings;
   telegram: TelegramSettings;
@@ -87,15 +98,24 @@ export type Dashboard = {
   status: RuntimeStatus;
   results: AdResult[];
   logs: PanelLog[];
+  accounts: AccountStatus[];
 };
 
 export type LoginResponse = {
   token: string;
 };
 
-export type TelegramAuthResponse = {
-  connected: boolean;
-  waiting_for?: string | null;
+export type QrStartResponse = {
+  account_id: string;
+  qr_url: string;
+  expires_at: string;
+};
+
+export type QrPollResponse = {
+  account_id: string;
+  status: 'waiting' | 'password' | 'connected' | 'error';
+  qr_url?: string | null;
+  expires_at?: string | null;
   message: string;
 };
 

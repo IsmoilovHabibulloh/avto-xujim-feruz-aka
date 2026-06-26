@@ -36,21 +36,23 @@ import {
   LogOut,
   Play,
   Plus,
+  QrCode,
   RefreshCw,
   Save,
-  Send,
-  Trash2,
-  Unplug
+  Trash2
 } from 'lucide-react';
+import QRCodeLib from 'qrcode';
 import {
+  AccountStatus,
   AdResult,
   ApiError,
   Dashboard,
   KeywordRule,
   Settings,
   PanelLog,
+  QrPollResponse,
+  QrStartResponse,
   SmmBalance,
-  TelegramAuthResponse,
   apiFetch
 } from './api';
 
@@ -87,11 +89,6 @@ function App() {
   const [keywordServiceIdInput, setKeywordServiceIdInput] = useState('875');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [whitelistInput, setWhitelistInput] = useState('');
-  const [tgApiId, setTgApiId] = useState('');
-  const [tgApiHash, setTgApiHash] = useState('');
-  const [tgPhone, setTgPhone] = useState('');
-  const [tgCode, setTgCode] = useState('');
-  const [tgPassword, setTgPassword] = useState('');
 
   // Foydalanuvchi sozlamalarni tahrirlaganini kuzatamiz. Poll (har interval'da)
   // server nusxasini yuklab kelganda, agar tahrir saqlanmagan bo'lsa, uni
@@ -133,13 +130,6 @@ function App() {
       // Saqlanmagan tahrir bo'lmasagina draft sozlamalarni serverdan yangilaymiz.
       if (!dirtyRef.current) {
         setSettings(normalizeSettings(data.settings));
-      }
-      // Telegram maydonlarini faqat bir marta (birinchi yuklashda) to'ldiramiz,
-      // aks holda Userbot tabida yozayotgan paytda poll uni bosib ketardi.
-      if (!initializedRef.current) {
-        setTgApiId(data.telegram.api_id ? String(data.telegram.api_id) : '');
-        setTgPhone(data.telegram.phone ?? '');
-        initializedRef.current = true;
       }
       setError(null);
     } catch (err) {
@@ -359,72 +349,6 @@ function App() {
     };
     setSettings(next);
     void commitSettings(next, "Ro'yxat saqlandi");
-  };
-
-  const requestCode = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const data = await apiFetch<TelegramAuthResponse>('/telegram/request-code', token, {
-        method: 'POST',
-        body: JSON.stringify({
-          api_id: Number(tgApiId),
-          api_hash: tgApiHash,
-          phone: tgPhone
-        })
-      });
-      setNotice(data.message);
-      await refresh();
-    } catch (err) {
-      if (!handleAuthError(err)) {
-        setError(err instanceof Error ? err.message : 'Telegram login xato');
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const verifyTelegram = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const data = await apiFetch<TelegramAuthResponse>('/telegram/verify-code', token, {
-        method: 'POST',
-        body: JSON.stringify({
-          code: tgCode || null,
-          password: tgPassword || null
-        })
-      });
-      setNotice(data.message);
-      if (data.connected) {
-        setTgCode('');
-        setTgPassword('');
-        setTgApiHash('');
-      }
-      await refresh();
-    } catch (err) {
-      if (!handleAuthError(err)) {
-        setError(err instanceof Error ? err.message : 'Tasdiqlash xato');
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disconnectTelegram = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await apiFetch('/telegram/disconnect', token, { method: 'POST' });
-      setNotice('Userbot uzildi');
-      await refresh();
-    } catch (err) {
-      if (!handleAuthError(err)) {
-        setError(err instanceof Error ? err.message : 'Uzish xato');
-      }
-    } finally {
-      setBusy(false);
-    }
   };
 
   const runScan = async () => {
@@ -652,22 +576,14 @@ function App() {
                 />
               )}
               {tab === 1 && (
-                <TelegramPanel
-                  dashboard={dashboard}
-                  tgApiId={tgApiId}
-                  setTgApiId={setTgApiId}
-                  tgApiHash={tgApiHash}
-                  setTgApiHash={setTgApiHash}
-                  tgPhone={tgPhone}
-                  setTgPhone={setTgPhone}
-                  tgCode={tgCode}
-                  setTgCode={setTgCode}
-                  tgPassword={tgPassword}
-                  setTgPassword={setTgPassword}
-                  requestCode={requestCode}
-                  verifyTelegram={verifyTelegram}
-                  disconnectTelegram={disconnectTelegram}
-                  busy={busy}
+                <AccountsPanel
+                  token={token}
+                  accounts={dashboard?.accounts ?? []}
+                  apiConfigured={Boolean(dashboard?.telegram.api_id) && Boolean(dashboard?.telegram.api_hash)}
+                  savedApiId={dashboard?.telegram.api_id ?? null}
+                  onRefresh={refresh}
+                  onNotice={setNotice}
+                  onError={setError}
                 />
               )}
               {tab === 2 && (
@@ -1285,136 +1201,326 @@ function ListEditor({
   );
 }
 
-type TelegramPanelProps = {
-  dashboard: Dashboard | null;
-  tgApiId: string;
-  setTgApiId: (value: string) => void;
-  tgApiHash: string;
-  setTgApiHash: (value: string) => void;
-  tgPhone: string;
-  setTgPhone: (value: string) => void;
-  tgCode: string;
-  setTgCode: (value: string) => void;
-  tgPassword: string;
-  setTgPassword: (value: string) => void;
-  requestCode: () => void;
-  verifyTelegram: () => void;
-  disconnectTelegram: () => void;
-  busy: boolean;
+type AccountsPanelProps = {
+  token: string | null;
+  accounts: AccountStatus[];
+  apiConfigured: boolean;
+  savedApiId: number | null;
+  onRefresh: () => void;
+  onNotice: (message: string) => void;
+  onError: (message: string) => void;
 };
 
-function TelegramPanel(props: TelegramPanelProps) {
-  const {
-    dashboard,
-    tgApiId,
-    setTgApiId,
-    tgApiHash,
-    setTgApiHash,
-    tgPhone,
-    setTgPhone,
-    tgCode,
-    setTgCode,
-    tgPassword,
-    setTgPassword,
-    requestCode,
-    verifyTelegram,
-    disconnectTelegram,
-    busy
-  } = props;
-  const waitingFor = dashboard?.status.login_waiting_for;
-  const connected = Boolean(dashboard?.status.telegram_connected);
+function AccountsPanel({
+  token,
+  accounts,
+  apiConfigured,
+  savedApiId,
+  onRefresh,
+  onNotice,
+  onError
+}: AccountsPanelProps) {
+  const [apiIdInput, setApiIdInput] = useState(savedApiId ? String(savedApiId) : '');
+  const [apiHashInput, setApiHashInput] = useState('');
+  const [savingCreds, setSavingCreds] = useState(false);
+
+  const [qrActive, setQrActive] = useState(false);
+  const [qrAccountId, setQrAccountId] = useState<string | null>(null);
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [qrStatus, setQrStatus] = useState<'waiting' | 'password'>('waiting');
+  const [qrPassword, setQrPassword] = useState('');
+  const [qrBusy, setQrBusy] = useState(false);
+
+  const closeQr = () => {
+    setQrActive(false);
+    setQrAccountId(null);
+    setQrUrl(null);
+    setQrImage(null);
+    setQrStatus('waiting');
+    setQrPassword('');
+  };
+
+  const saveCredentials = async () => {
+    setSavingCreds(true);
+    try {
+      await apiFetch('/telegram/credentials', token, {
+        method: 'POST',
+        body: JSON.stringify({ api_id: Number(apiIdInput), api_hash: apiHashInput.trim() })
+      });
+      setApiHashInput('');
+      onNotice("API ma'lumotlari saqlandi");
+      onRefresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Saqlash xato');
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const startQr = async () => {
+    setQrBusy(true);
+    try {
+      const data = await apiFetch<QrStartResponse>('/telegram/qr/start', token, { method: 'POST' });
+      setQrAccountId(data.account_id);
+      setQrUrl(data.qr_url);
+      setQrStatus('waiting');
+      setQrPassword('');
+      setQrActive(true);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'QR boshlashda xato');
+    } finally {
+      setQrBusy(false);
+    }
+  };
+
+  const submitPassword = async () => {
+    if (!qrAccountId) return;
+    setQrBusy(true);
+    try {
+      const data = await apiFetch<QrPollResponse>('/telegram/qr/password', token, {
+        method: 'POST',
+        body: JSON.stringify({ account_id: qrAccountId, password: qrPassword })
+      });
+      if (data.status === 'connected') {
+        closeQr();
+        onNotice('Akkaunt ulandi');
+        onRefresh();
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "2FA parol noto'g'ri");
+    } finally {
+      setQrBusy(false);
+    }
+  };
+
+  const removeAccount = async (id: string) => {
+    try {
+      await apiFetch('/telegram/account/remove', token, {
+        method: 'POST',
+        body: JSON.stringify({ account_id: id })
+      });
+      onNotice("Akkaunt o'chirildi");
+      onRefresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "O'chirish xato");
+    }
+  };
+
+  // qr_url o'zgarganda QR rasmni chizamiz.
+  useEffect(() => {
+    if (!qrUrl) {
+      setQrImage(null);
+      return;
+    }
+    let active = true;
+    QRCodeLib.toDataURL(qrUrl, { width: 240, margin: 1 })
+      .then((url) => {
+        if (active) setQrImage(url);
+      })
+      .catch(() => {
+        if (active) setQrImage(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [qrUrl]);
+
+  // QR holatini har 2.5s da tekshiramiz (faqat skan kutilayotganda).
+  useEffect(() => {
+    if (!qrActive || !qrAccountId || qrStatus !== 'waiting') return;
+    let cancelled = false;
+    const id = window.setInterval(async () => {
+      try {
+        const data = await apiFetch<QrPollResponse>('/telegram/qr/poll', token, {
+          method: 'POST',
+          body: JSON.stringify({ account_id: qrAccountId })
+        });
+        if (cancelled) return;
+        if (data.status === 'connected') {
+          closeQr();
+          onNotice('Akkaunt ulandi');
+          onRefresh();
+        } else if (data.status === 'password') {
+          setQrStatus('password');
+        } else if (data.status === 'waiting' && data.qr_url) {
+          setQrUrl(data.qr_url);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        closeQr();
+        onError(err instanceof Error ? err.message : 'QR tekshirishda xato');
+      }
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrActive, qrAccountId, qrStatus, token]);
 
   return (
     <Stack spacing={3}>
-      {connected && (
-        <Alert severity="success" icon={<CircleCheck size={18} />}>
-          Userbot ulangan.
-        </Alert>
+      {!apiConfigured ? (
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Typography variant="h6">Telegram API</Typography>
+            <Typography variant="body2" color="text.secondary">
+              QR orqali akkaunt qo'shishdan oldin API ID va API hash kiriting (my.telegram.org dan olinadi).
+            </Typography>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr auto' },
+                gap: 1.5
+              }}
+            >
+              <TextField
+                label="API ID"
+                type="number"
+                value={apiIdInput}
+                onChange={(event) => setApiIdInput(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="API hash"
+                type="password"
+                value={apiHashInput}
+                onChange={(event) => setApiHashInput(event.target.value)}
+                fullWidth
+              />
+              <Button
+                variant="contained"
+                onClick={saveCredentials}
+                disabled={savingCreds}
+                startIcon={<Save size={18} />}
+                sx={{ minWidth: 120 }}
+              >
+                Saqlash
+              </Button>
+            </Box>
+          </Stack>
+        </Paper>
+      ) : (
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          <Chip
+            color="secondary"
+            icon={<CircleCheck size={16} />}
+            label={`API sozlangan (ID: ${savedApiId})`}
+            sx={{ fontWeight: 800 }}
+          />
+        </Stack>
       )}
-      {waitingFor === 'code' && <Alert severity="info">Telegramdan kelgan kodni kiriting.</Alert>}
-      {waitingFor === 'password' && <Alert severity="info">2FA parolni kiriting.</Alert>}
 
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr 1fr' }, gap: 2 }}>
-        <TextField
-          label="API ID"
-          value={tgApiId}
-          onChange={(event) => setTgApiId(event.target.value)}
-          type="number"
-          fullWidth
-        />
-        <TextField
-          label="API hash"
-          value={tgApiHash}
-          onChange={(event) => setTgApiHash(event.target.value)}
-          type="password"
-          fullWidth
-          slotProps={{
-            input: {
-              endAdornment: dashboard?.telegram.api_hash ? (
-                <InputAdornment position="end">saqlangan</InputAdornment>
-              ) : null
-            }
-          }}
-        />
-        <TextField
-          label="Telefon"
-          value={tgPhone}
-          onChange={(event) => setTgPhone(event.target.value)}
-          placeholder="+998..."
-          fullWidth
-        />
-      </Box>
-
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-        <Button variant="contained" onClick={requestCode} disabled={busy} startIcon={<Send size={18} />}>
-          Kod olish
-        </Button>
-        <Button
-          variant="outlined"
-          color="error"
-          onClick={disconnectTelegram}
-          disabled={busy || !connected}
-          startIcon={<Unplug size={18} />}
-        >
-          Uzish
-        </Button>
-      </Stack>
-
-      <Divider />
-
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: '1fr', md: '1fr 1fr auto' },
-          gap: 2,
-          alignItems: 'center'
-        }}
-      >
-        <TextField
-          label="Kod"
-          value={tgCode}
-          onChange={(event) => setTgCode(event.target.value)}
-          disabled={waitingFor === 'password'}
-          fullWidth
-        />
-        <TextField
-          label="2FA parol"
-          value={tgPassword}
-          onChange={(event) => setTgPassword(event.target.value)}
-          type="password"
-          fullWidth
-        />
+      <Box>
         <Button
           variant="contained"
-          color="secondary"
-          onClick={verifyTelegram}
-          disabled={busy || connected}
-          startIcon={<CircleCheck size={18} />}
-          sx={{ minWidth: 140 }}
+          onClick={startQr}
+          disabled={!apiConfigured || qrBusy || qrActive}
+          startIcon={<QrCode size={18} />}
+          sx={{ width: { xs: '100%', sm: 'auto' } }}
         >
-          Tasdiqlash
+          QR bilan akkaunt qo'shish
         </Button>
       </Box>
+
+      {qrActive && (
+        <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
+          <Stack spacing={2} sx={{ alignItems: 'center', textAlign: 'center' }}>
+            {qrStatus === 'waiting' ? (
+              <>
+                <Typography variant="h6">QR kodni skanерlang</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 440 }}>
+                  Telegram ilovasi → Sozlamalar → Qurilmalar → "Kompyuter qurilmasini ulash" →
+                  shu QR kodni skanерlang.
+                </Typography>
+                {qrImage ? (
+                  <Box
+                    component="img"
+                    src={qrImage}
+                    alt="QR"
+                    sx={{ width: 240, height: 240, borderRadius: 2, bgcolor: '#fff', p: 1 }}
+                  />
+                ) : (
+                  <CircularProgress />
+                )}
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="caption" color="text.secondary">
+                    Ulanish kutilmoqda…
+                  </Typography>
+                </Stack>
+              </>
+            ) : (
+              <>
+                <Typography variant="h6">2FA parol</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 440 }}>
+                  Bu akkauntda ikki bosqichli (2FA) parol yoqilgan. Parolni kiriting.
+                </Typography>
+                <TextField
+                  label="2FA parol"
+                  type="password"
+                  value={qrPassword}
+                  onChange={(event) => setQrPassword(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') submitPassword();
+                  }}
+                  sx={{ maxWidth: 320, width: '100%' }}
+                />
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  onClick={submitPassword}
+                  disabled={qrBusy}
+                  startIcon={<CircleCheck size={18} />}
+                >
+                  Tasdiqlash
+                </Button>
+              </>
+            )}
+            <Button variant="text" onClick={closeQr}>
+              Bekor qilish
+            </Button>
+          </Stack>
+        </Paper>
+      )}
+
+      <Stack spacing={1.5}>
+        <Typography variant="h6">Akkauntlar ({accounts.length})</Typography>
+        {accounts.length === 0 && <EmptyHint text="Akkaunt yo'q — QR bilan qo'shing" />}
+        <Stack spacing={1}>
+          {accounts.map((account) => (
+            <Paper key={account.id} variant="outlined" sx={{ p: 1.5 }}>
+              <Stack
+                direction="row"
+                sx={{ justifyContent: 'space-between', alignItems: 'center', gap: 1 }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography sx={{ fontWeight: 800 }} className="text-clamp">
+                    {account.label || account.username || account.id.slice(0, 8)}
+                  </Typography>
+                  <Stack direction="row" spacing={0.75} sx={{ mt: 0.5, flexWrap: 'wrap' }}>
+                    <Chip
+                      size="small"
+                      color={account.connected ? 'secondary' : 'default'}
+                      icon={account.connected ? <CircleCheck size={14} /> : <CircleOff size={14} />}
+                      label={account.connected ? 'Ulangan' : 'Ulanmagan'}
+                    />
+                    {account.flooded && (
+                      <Chip size="small" color="warning" label={`Limit: ${formatDate(account.flood_until)}`} />
+                    )}
+                  </Stack>
+                </Box>
+                <Tooltip title="O'chirish">
+                  <IconButton color="error" onClick={() => removeAccount(account.id)}>
+                    <Trash2 size={18} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Paper>
+          ))}
+        </Stack>
+      </Stack>
     </Stack>
   );
 }

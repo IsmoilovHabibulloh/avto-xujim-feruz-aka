@@ -6,8 +6,21 @@ use crate::telegram::normalize_channel_ref;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{error, info};
+
+/// anyhow xato zanjiridan FLOOD_WAIT sekundlarini ajratib oladi (bo'lsa).
+fn flood_wait_secs(err: &anyhow::Error) -> Option<i64> {
+    let text = format!("{err:?}");
+    let pos = text.find("FLOOD_WAIT")?;
+    let digits: String = text[pos..]
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    Some(digits.parse::<i64>().unwrap_or(60).max(1))
+}
 
 /// Bir xil reklama qayta topilganda, oldingi order hali bajarilmagan bo'lsa
 /// shuncha daqiqa kutib turamiz; shu vaqtdan keyin baribir qayta yuborishga ruxsat.
@@ -121,31 +134,108 @@ async fn scan_inner(state: &AppState, force: bool) -> Result<ScanResponse> {
         });
     }
 
-    let client = state.telegram.ensure_client(&telegram_settings).await?;
+    let api_id = telegram_settings
+        .api_id
+        .ok_or_else(|| anyhow!("Telegram API ID kiritilmagan"))?;
+    let accounts = state.store.accounts().await;
+    if accounts.is_empty() {
+        return Ok(ScanResponse {
+            added: 0,
+            checked_channels: 0,
+            checked_keywords: 0,
+            message: "Userbot akkaunt yo'q. QR orqali akkaunt qo'shing".to_string(),
+        });
+    }
+
     let mut collected = Vec::new();
     let mut scan_logs = vec![PanelLog::new(
         "info",
         "Scan boshlandi",
         format!(
-            "{} ta key bo'yicha global qidiruv: {}",
+            "{} ta key bo'yicha global qidiruv: {}. Akkauntlar: {}",
             keywords.len(),
-            keywords.join(", ")
+            keywords.join(", "),
+            accounts.len()
         ),
     )];
 
     for query in &keywords {
-        match state.telegram.get_sponsored_peers(&client, query).await {
-            Ok(mut ads) => collected.append(&mut ads),
-            Err(err) => {
-                let message = format!("{query}: {err}");
-                state.runtime.write().await.last_error = Some(message.clone());
+        // Har key uchun navbatdagi (round-robin) sog'lom akkauntni tanlaymiz.
+        // FLOOD_WAIT bo'lsa, o'sha akkaunt "dam oladi" va keyingisiga o'tamiz.
+        let mut attempts = 0usize;
+        loop {
+            if attempts >= accounts.len() {
                 let mut log = PanelLog::new(
-                    "error",
-                    "Qidiruvda xato",
-                    format!("'{query}' key bo'yicha qidiruvda xato: {err}"),
+                    "warning",
+                    "Akkaunt topilmadi",
+                    format!("'{query}' uchun bo'sh (limitsiz) akkaunt yo'q, o'tkazib yuborildi."),
                 );
                 log.keyword = Some(query.clone());
                 scan_logs.push(log);
+                break;
+            }
+            attempts += 1;
+
+            let idx = state.rr.fetch_add(1, Ordering::Relaxed) % accounts.len();
+            let account = &accounts[idx];
+
+            if let Some(until) = account.flood_until {
+                if until > now {
+                    continue; // bu akkaunt hali dam olyapti
+                }
+            }
+
+            let client = match state.telegram.ensure_account_client(&account.id, api_id).await {
+                Ok(client) => client,
+                Err(err) => {
+                    let mut log = PanelLog::new(
+                        "warning",
+                        "Akkaunt ulanmadi",
+                        format!(
+                            "{} akkaunt ulanmadi: {err}",
+                            account.label.clone().unwrap_or_else(|| account.id.clone())
+                        ),
+                    );
+                    log.keyword = Some(query.clone());
+                    scan_logs.push(log);
+                    continue;
+                }
+            };
+
+            match state.telegram.get_sponsored_peers(&client, query).await {
+                Ok(mut ads) => {
+                    collected.append(&mut ads);
+                    state.store.touch_account_used(&account.id, now).await;
+                    break;
+                }
+                Err(err) => {
+                    if let Some(secs) = flood_wait_secs(&err) {
+                        let until = now + Duration::seconds(secs);
+                        let _ = state.store.set_account_flood(&account.id, until).await;
+                        let label = account.label.clone().unwrap_or_else(|| account.id.clone());
+                        let mut log = PanelLog::new(
+                            "warning",
+                            "Limit (FLOOD_WAIT)",
+                            format!(
+                                "{label} akkaunt {secs}s limitga tushdi. Keyingi akkauntga o'tildi."
+                            ),
+                        );
+                        log.keyword = Some(query.clone());
+                        scan_logs.push(log);
+                        continue; // keyingi akkaunt bilan shu keyni qayta sinaymiz
+                    }
+
+                    let message = format!("{query}: {err}");
+                    state.runtime.write().await.last_error = Some(message.clone());
+                    let mut log = PanelLog::new(
+                        "error",
+                        "Qidiruvda xato",
+                        format!("'{query}' key bo'yicha qidiruvda xato: {err}"),
+                    );
+                    log.keyword = Some(query.clone());
+                    scan_logs.push(log);
+                    break; // limit emas — bu keyni o'tkazamiz
+                }
             }
         }
     }

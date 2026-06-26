@@ -1,7 +1,9 @@
 use crate::models::{
-    DashboardResponse, ErrorResponse, LoginRequest, LoginResponse, MeResponse, PanelLog,
-    RuntimeStatus, Settings, SmmBalance, TelegramRequestCode, TelegramSettings, TelegramVerifyCode,
+    AccountIdRequest, AccountStatus, CredentialsRequest, DashboardResponse, ErrorResponse,
+    LoginRequest, LoginResponse, MeResponse, PanelLog, QrPasswordRequest, QrPollResponse,
+    QrStartResponse, RuntimeStatus, Settings, SmmBalance, TelegramAccount, TelegramSettings,
 };
+use crate::telegram::QrOutcome;
 use crate::scanner;
 use crate::smmmain::SmmMainService;
 use crate::store::Store;
@@ -15,6 +17,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -25,6 +28,8 @@ pub struct AppState {
     pub smmmain: Arc<SmmMainService>,
     pub sessions: Arc<RwLock<HashMap<String, String>>>,
     pub runtime: Arc<RwLock<RuntimeInfo>>,
+    /// Akkauntlar bo'yicha round-robin hisoblagich.
+    pub rr: Arc<AtomicUsize>,
     pub admin_username: String,
     pub admin_password: String,
 }
@@ -42,18 +47,17 @@ impl AppState {
         let runtime = self.runtime.read().await.clone();
         let snapshot = self.store.snapshot().await;
         let next_run_at = next_keyword_run_at(&snapshot.settings).or(runtime.next_run_at);
-        let telegram_connected = if self.telegram.is_connected().await {
-            true
-        } else {
-            self.telegram
-                .ensure_client(&snapshot.telegram)
-                .await
-                .is_ok()
-        };
+        let mut telegram_connected = false;
+        for account in &snapshot.accounts {
+            if self.telegram.is_account_connected(&account.id).await {
+                telegram_connected = true;
+                break;
+            }
+        }
 
         RuntimeStatus {
             telegram_connected,
-            login_waiting_for: self.telegram.waiting_for().await,
+            login_waiting_for: None,
             scanning: runtime.scanning,
             last_run_at: runtime.last_run_at,
             next_run_at,
@@ -122,9 +126,12 @@ pub fn router(state: AppState) -> Router {
         .route("/smmmain/balance", get(smmmain_balance))
         .route("/status", get(status))
         .route("/scan/run", post(run_scan))
-        .route("/telegram/request-code", post(telegram_request_code))
-        .route("/telegram/verify-code", post(telegram_verify_code))
-        .route("/telegram/disconnect", post(telegram_disconnect))
+        .route("/telegram/credentials", post(telegram_credentials))
+        .route("/telegram/accounts", get(telegram_accounts))
+        .route("/telegram/qr/start", post(telegram_qr_start))
+        .route("/telegram/qr/poll", post(telegram_qr_poll))
+        .route("/telegram/qr/password", post(telegram_qr_password))
+        .route("/telegram/account/remove", post(telegram_account_remove))
         .with_state(state)
 }
 
@@ -169,6 +176,7 @@ async fn dashboard(
 ) -> Result<Json<DashboardResponse>, ApiError> {
     require_auth(&headers, &state).await?;
     let snapshot = state.store.snapshot().await;
+    let accounts = account_statuses(&state, &snapshot.accounts).await;
     Ok(Json(DashboardResponse {
         settings: snapshot.settings,
         telegram: public_telegram_settings(snapshot.telegram),
@@ -176,7 +184,28 @@ async fn dashboard(
         status: state.status().await,
         results: snapshot.results,
         logs: snapshot.logs,
+        accounts,
     }))
+}
+
+async fn account_statuses(state: &AppState, accounts: &[TelegramAccount]) -> Vec<AccountStatus> {
+    let now = Utc::now();
+    let mut out = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let connected = state.telegram.is_account_connected(&account.id).await;
+        let flooded = account.flood_until.map(|until| until > now).unwrap_or(false);
+        out.push(AccountStatus {
+            id: account.id.clone(),
+            label: account.label.clone(),
+            username: account.username.clone(),
+            connected,
+            flooded,
+            flood_until: account.flood_until,
+            created_at: account.created_at,
+            last_used_at: account.last_used_at,
+        });
+    }
+    out
 }
 
 async fn smmmain_balance(
@@ -278,58 +307,150 @@ async fn run_scan(
     Ok(Json(scanner::scan_once(state).await?))
 }
 
-async fn telegram_request_code(
+async fn telegram_credentials(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<TelegramRequestCode>,
-) -> Result<Json<crate::models::TelegramAuthResponse>, ApiError> {
-    require_auth(&headers, &state).await?;
-
-    if payload.api_id <= 0 || payload.api_hash.trim().is_empty() || payload.phone.trim().is_empty()
-    {
-        return Err(ApiError::bad_request("API ID, API hash va telefon kerak"));
-    }
-
-    let settings = TelegramSettings {
-        api_id: Some(payload.api_id),
-        api_hash: Some(payload.api_hash.trim().to_string()),
-        phone: Some(payload.phone.trim().to_string()),
-    };
-    state.store.update_telegram(settings.clone()).await?;
-
-    Ok(Json(
-        state
-            .telegram
-            .request_code(
-                payload.api_id,
-                settings.api_hash.unwrap_or_default(),
-                settings.phone.unwrap_or_default(),
-            )
-            .await?,
-    ))
-}
-
-async fn telegram_verify_code(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(payload): Json<TelegramVerifyCode>,
-) -> Result<Json<crate::models::TelegramAuthResponse>, ApiError> {
-    require_auth(&headers, &state).await?;
-    Ok(Json(
-        state
-            .telegram
-            .verify_code(payload.code, payload.password)
-            .await?,
-    ))
-}
-
-async fn telegram_disconnect(
-    State(state): State<AppState>,
-    headers: HeaderMap,
+    Json(payload): Json<CredentialsRequest>,
 ) -> Result<Json<SimpleMessage>, ApiError> {
     require_auth(&headers, &state).await?;
-    state.telegram.disconnect().await;
-    Ok(Json(SimpleMessage::new("Userbot uzildi")))
+    if payload.api_id <= 0 || payload.api_hash.trim().is_empty() {
+        return Err(ApiError::bad_request("API ID va API hash kerak"));
+    }
+    let mut settings = state.store.telegram_settings().await;
+    settings.api_id = Some(payload.api_id);
+    settings.api_hash = Some(payload.api_hash.trim().to_string());
+    state.store.update_telegram(settings).await?;
+    Ok(Json(SimpleMessage::new("API ma'lumotlari saqlandi")))
+}
+
+async fn telegram_accounts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AccountStatus>>, ApiError> {
+    require_auth(&headers, &state).await?;
+    let accounts = state.store.accounts().await;
+    Ok(Json(account_statuses(&state, &accounts).await))
+}
+
+async fn telegram_qr_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<QrStartResponse>, ApiError> {
+    require_auth(&headers, &state).await?;
+    let settings = state.store.telegram_settings().await;
+    let api_id = settings
+        .api_id
+        .ok_or_else(|| ApiError::bad_request("Avval API ID/hash kiriting"))?;
+    let api_hash = settings
+        .api_hash
+        .filter(|h| !h.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("Avval API ID/hash kiriting"))?;
+
+    let account_id = Uuid::new_v4().to_string();
+    let (qr_url, expires_at) = state
+        .telegram
+        .start_qr(&account_id, api_id, &api_hash)
+        .await?;
+
+    Ok(Json(QrStartResponse {
+        account_id,
+        qr_url,
+        expires_at,
+    }))
+}
+
+async fn telegram_qr_poll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AccountIdRequest>,
+) -> Result<Json<QrPollResponse>, ApiError> {
+    require_auth(&headers, &state).await?;
+    let outcome = state.telegram.poll_qr(&payload.account_id).await?;
+    Ok(Json(qr_response(&state, &payload.account_id, outcome).await?))
+}
+
+async fn telegram_qr_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<QrPasswordRequest>,
+) -> Result<Json<QrPollResponse>, ApiError> {
+    require_auth(&headers, &state).await?;
+    if payload.password.trim().is_empty() {
+        return Err(ApiError::bad_request("2FA parol kerak"));
+    }
+    let outcome = state
+        .telegram
+        .submit_qr_password(&payload.account_id, payload.password.trim())
+        .await?;
+    Ok(Json(qr_response(&state, &payload.account_id, outcome).await?))
+}
+
+async fn telegram_account_remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AccountIdRequest>,
+) -> Result<Json<SimpleMessage>, ApiError> {
+    require_auth(&headers, &state).await?;
+    state.telegram.remove_account_session(&payload.account_id).await?;
+    state.store.remove_account(&payload.account_id).await?;
+    Ok(Json(SimpleMessage::new("Akkaunt o'chirildi")))
+}
+
+/// QR natijasini javobga aylantiradi; ulanganda akkauntni saqlaydi.
+async fn qr_response(
+    state: &AppState,
+    account_id: &str,
+    outcome: QrOutcome,
+) -> Result<QrPollResponse, ApiError> {
+    match outcome {
+        QrOutcome::Waiting { qr_url, expires_at } => Ok(QrPollResponse {
+            account_id: account_id.to_string(),
+            status: "waiting".to_string(),
+            qr_url: Some(qr_url),
+            expires_at: Some(expires_at),
+            message: "QR kutilmoqda".to_string(),
+        }),
+        QrOutcome::NeedPassword => Ok(QrPollResponse {
+            account_id: account_id.to_string(),
+            status: "password".to_string(),
+            qr_url: None,
+            expires_at: None,
+            message: "2FA parol kerak".to_string(),
+        }),
+        QrOutcome::Connected { username } => {
+            // Akkaunt allaqachon ro'yxatda bo'lmasa, qo'shamiz.
+            let exists = state
+                .store
+                .accounts()
+                .await
+                .iter()
+                .any(|a| a.id == account_id);
+            if !exists {
+                let label = username
+                    .clone()
+                    .map(|u| format!("@{u}"))
+                    .unwrap_or_else(|| "Akkaunt".to_string());
+                state
+                    .store
+                    .add_account(TelegramAccount {
+                        id: account_id.to_string(),
+                        label: Some(label),
+                        username,
+                        created_at: Utc::now(),
+                        last_used_at: None,
+                        flood_until: None,
+                    })
+                    .await?;
+            }
+            Ok(QrPollResponse {
+                account_id: account_id.to_string(),
+                status: "connected".to_string(),
+                qr_url: None,
+                expires_at: None,
+                message: "Akkaunt ulandi".to_string(),
+            })
+        }
+    }
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {

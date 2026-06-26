@@ -1,19 +1,25 @@
 use anyhow::{Context, Result, anyhow, bail};
+use chrono::{DateTime, Utc};
+use grammers_client::client::PasswordToken;
 use grammers_client::{Client, SignInError};
-use grammers_mtsender::SenderPool;
+use grammers_mtsender::{SenderPool, SenderPoolFatHandle};
+use grammers_session::Session;
 use grammers_session::storages::SqliteSession;
-use grammers_tl_types as tl;
+use grammers_tl_types::{self as tl, Deserializable, Serializable};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::models::{AdResult, TelegramAuthResponse, TelegramSettings};
+use crate::models::AdResult;
 
+/// Bir nechta Telegram akkauntini (userbot) boshqaradigan xizmat.
+/// Har akkaunt o'z sessiya faylida: `<session_dir>/userbot-<id>.session`.
 pub struct TelegramService {
-    session_path: PathBuf,
-    active: Mutex<Option<ActiveClient>>,
-    pending: Mutex<Option<PendingLogin>>,
+    session_dir: PathBuf,
+    clients: Mutex<HashMap<String, ActiveClient>>,
+    pending: Mutex<HashMap<String, PendingQr>>,
 }
 
 struct ActiveClient {
@@ -21,191 +27,343 @@ struct ActiveClient {
     runner: JoinHandle<()>,
 }
 
-enum PendingStep {
-    Code(grammers_client::client::LoginToken),
-    Password(grammers_client::client::PasswordToken),
+struct PendingQr {
+    client: Client,
+    handle: SenderPoolFatHandle,
+    session: Arc<SqliteSession>,
+    runner: JoinHandle<()>,
+    api_id: i32,
+    api_hash: String,
+    awaiting_password: bool,
 }
 
-struct PendingLogin {
-    client: Client,
-    runner: JoinHandle<()>,
-    step: PendingStep,
+/// QR login holatining natijasi.
+pub enum QrOutcome {
+    /// Hali skanерlanmagan — QR ko'rsatilib turiladi.
+    Waiting {
+        qr_url: String,
+        expires_at: DateTime<Utc>,
+    },
+    /// Skanерlandi, lekin akkauntda 2FA bor — parol kerak.
+    NeedPassword,
+    /// Ulandi.
+    Connected { username: Option<String> },
 }
 
 impl TelegramService {
     pub fn new(session_path: impl AsRef<Path>) -> Self {
+        let path = session_path.as_ref();
+        let session_dir = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("data"));
         Self {
-            session_path: session_path.as_ref().to_path_buf(),
-            active: Mutex::new(None),
-            pending: Mutex::new(None),
+            session_dir,
+            clients: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn is_connected(&self) -> bool {
-        let active = self.active.lock().await;
-        if let Some(active) = active.as_ref() {
-            active.client.is_authorized().await.unwrap_or(false)
-        } else {
-            false
-        }
+    pub fn account_session_path(&self, account_id: &str) -> PathBuf {
+        self.session_dir.join(format!("userbot-{account_id}.session"))
     }
 
-    pub async fn waiting_for(&self) -> Option<String> {
-        let pending = self.pending.lock().await;
-        pending.as_ref().map(|pending| match pending.step {
-            PendingStep::Code(_) => "code".to_string(),
-            PendingStep::Password(_) => "password".to_string(),
-        })
-    }
-
-    pub async fn disconnect(&self) {
-        if let Some(active) = self.active.lock().await.take() {
-            active.runner.abort();
-        }
-        if let Some(pending) = self.pending.lock().await.take() {
-            pending.runner.abort();
-        }
-    }
-
-    pub async fn request_code(
-        &self,
-        api_id: i32,
-        api_hash: String,
-        phone: String,
-    ) -> Result<TelegramAuthResponse> {
-        let (client, runner) = self.connect(api_id).await?;
-
-        if client.is_authorized().await? {
-            self.set_active(client, runner).await;
-            return Ok(TelegramAuthResponse {
-                connected: true,
-                waiting_for: None,
-                message: "Userbot allaqachon ulangan".to_string(),
-            });
-        }
-
-        let token = client
-            .request_login_code(&phone, &api_hash)
-            .await
-            .context("Telegram login kodi so'rovida xatolik")?;
-
-        if let Some(old) = self.pending.lock().await.replace(PendingLogin {
-            client,
-            runner,
-            step: PendingStep::Code(token),
-        }) {
-            old.runner.abort();
-        }
-
-        Ok(TelegramAuthResponse {
-            connected: false,
-            waiting_for: Some("code".to_string()),
-            message: "Kod yuborildi".to_string(),
-        })
-    }
-
-    pub async fn verify_code(
-        &self,
-        code: Option<String>,
-        password: Option<String>,
-    ) -> Result<TelegramAuthResponse> {
-        let pending = self
-            .pending
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| anyhow!("Avval login kodini so'rang"))?;
-
-        match pending.step {
-            PendingStep::Code(token) => {
-                let code = code
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|x| !x.is_empty())
-                    .ok_or_else(|| anyhow!("Telegram kodi kerak"))?;
-
-                match pending.client.sign_in(&token, code).await {
-                    Ok(_) => {
-                        self.set_active(pending.client, pending.runner).await;
-                        Ok(TelegramAuthResponse {
-                            connected: true,
-                            waiting_for: None,
-                            message: "Userbot ulandi".to_string(),
-                        })
-                    }
-                    Err(SignInError::PasswordRequired(token)) => {
-                        let hint = token.hint().map(|x| format!(" ({x})")).unwrap_or_default();
-                        self.restore_pending(PendingLogin {
-                            step: PendingStep::Password(token),
-                            ..pending
-                        })
-                        .await;
-                        Ok(TelegramAuthResponse {
-                            connected: false,
-                            waiting_for: Some("password".to_string()),
-                            message: format!("2FA parol kerak{hint}"),
-                        })
-                    }
-                    Err(err) => Err(anyhow!(err).context("Telegram kodini tasdiqlab bo'lmadi")),
-                }
-            }
-            PendingStep::Password(token) => {
-                let password = password
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|x| !x.is_empty())
-                    .ok_or_else(|| anyhow!("2FA parol kerak"))?;
-
-                match pending.client.check_password(token, password).await {
-                    Ok(_) => {
-                        self.set_active(pending.client, pending.runner).await;
-                        Ok(TelegramAuthResponse {
-                            connected: true,
-                            waiting_for: None,
-                            message: "Userbot ulandi".to_string(),
-                        })
-                    }
-                    Err(SignInError::InvalidPassword(token)) => {
-                        self.restore_pending(PendingLogin {
-                            step: PendingStep::Password(token),
-                            ..pending
-                        })
-                        .await;
-                        Err(anyhow!("2FA parol noto'g'ri"))
-                    }
-                    Err(err) => Err(anyhow!(err).context("2FA parolni tasdiqlab bo'lmadi")),
-                }
-            }
-        }
-    }
-
-    pub async fn ensure_client(&self, settings: &TelegramSettings) -> Result<Client> {
+    /// Akkaunt uchun ulangan (avtorizatsiyalangan) klientni qaytaradi. Kesh bo'lsa
+    /// undan, bo'lmasa sessiyadan ulanadi.
+    pub async fn ensure_account_client(&self, account_id: &str, api_id: i32) -> Result<Client> {
         {
-            let active = self.active.lock().await;
-            if let Some(active) = active.as_ref() {
+            let clients = self.clients.lock().await;
+            if let Some(active) = clients.get(account_id) {
                 if active.client.is_authorized().await.unwrap_or(false) {
                     return Ok(active.client.clone());
                 }
             }
         }
 
-        let api_id = settings
-            .api_id
-            .ok_or_else(|| anyhow!("Telegram API ID kiritilmagan"))?;
-        let (client, runner) = self.connect(api_id).await?;
-        if !client.is_authorized().await? {
+        let path = self.account_session_path(account_id);
+        let (client, _handle, _session, runner) = self.connect(api_id, &path).await?;
+        if !client.is_authorized().await.unwrap_or(false) {
             runner.abort();
-            bail!("Userbot ulanmagan. Admin paneldan Telegram login qiling");
+            bail!("Akkaunt ulanmagan (qayta QR kerak): {account_id}");
         }
 
-        self.set_active(client.clone(), runner).await;
+        let mut clients = self.clients.lock().await;
+        if let Some(old) = clients.insert(
+            account_id.to_string(),
+            ActiveClient {
+                client: client.clone(),
+                runner,
+            },
+        ) {
+            old.runner.abort();
+        }
         Ok(client)
     }
 
-    /// Berilgan `query` (key) bo'yicha Telegram'da GLOBAL sponsored qidiruv qiladi
-    /// (`contacts.getSponsoredPeers`). Natija — qidiruvga mos sponsored kanallar.
-    /// Har bir topilgan kanal `AdResult` ko'rinishida qaytariladi: target_channel —
-    /// topilgan kanal, matched_keywords — qidirilgan key.
+    /// Akkaunt keshda ulangan-ulanmaganini tekshiradi (tarmoqqa yangi ulanmaydi).
+    pub async fn is_account_connected(&self, account_id: &str) -> bool {
+        let clients = self.clients.lock().await;
+        if let Some(active) = clients.get(account_id) {
+            active.client.is_authorized().await.unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Yangi akkaunt uchun QR login boshlaydi: token (QR url) va amal qilish vaqtini qaytaradi.
+    pub async fn start_qr(
+        &self,
+        account_id: &str,
+        api_id: i32,
+        api_hash: &str,
+    ) -> Result<(String, DateTime<Utc>)> {
+        let path = self.account_session_path(account_id);
+        let (client, handle, session, runner) = self.connect(api_id, &path).await?;
+
+        let exported = client
+            .invoke(&tl::functions::auth::ExportLoginToken {
+                api_id,
+                api_hash: api_hash.to_string(),
+                except_ids: vec![],
+            })
+            .await;
+
+        match exported {
+            Ok(tl::enums::auth::LoginToken::Token(token)) => {
+                let qr_url = token_to_url(&token.token);
+                let expires_at = ts_to_dt(token.expires);
+                self.pending.lock().await.insert(
+                    account_id.to_string(),
+                    PendingQr {
+                        client,
+                        handle,
+                        session,
+                        runner,
+                        api_id,
+                        api_hash: api_hash.to_string(),
+                        awaiting_password: false,
+                    },
+                );
+                Ok((qr_url, expires_at))
+            }
+            Ok(_) => {
+                runner.abort();
+                bail!("QR boshlashda kutilmagan javob");
+            }
+            Err(err) => {
+                runner.abort();
+                Err(anyhow!(err).context("QR token olishda xato"))
+            }
+        }
+    }
+
+    /// QR holatini tekshiradi: foydalanuvchi skanерladimi.
+    pub async fn poll_qr(&self, account_id: &str) -> Result<QrOutcome> {
+        let pending = self
+            .pending
+            .lock()
+            .await
+            .remove(account_id)
+            .ok_or_else(|| anyhow!("QR sessiya topilmadi, qaytadan boshlang"))?;
+
+        if pending.awaiting_password {
+            self.pending
+                .lock()
+                .await
+                .insert(account_id.to_string(), pending);
+            return Ok(QrOutcome::NeedPassword);
+        }
+
+        let exported = pending
+            .client
+            .invoke(&tl::functions::auth::ExportLoginToken {
+                api_id: pending.api_id,
+                api_hash: pending.api_hash.clone(),
+                except_ids: vec![],
+            })
+            .await;
+
+        match exported {
+            Ok(tl::enums::auth::LoginToken::Token(token)) => {
+                let qr_url = token_to_url(&token.token);
+                let expires_at = ts_to_dt(token.expires);
+                self.pending
+                    .lock()
+                    .await
+                    .insert(account_id.to_string(), pending);
+                Ok(QrOutcome::Waiting { qr_url, expires_at })
+            }
+            Ok(tl::enums::auth::LoginToken::Success(_)) => {
+                let username = self.finalize(account_id, pending).await;
+                Ok(QrOutcome::Connected { username })
+            }
+            Ok(tl::enums::auth::LoginToken::MigrateTo(migrate)) => {
+                // Akkaunt boshqa DC'da — o'sha DC'ga importLoginToken yuboramiz.
+                let imported = self
+                    .import_on_dc(&pending, migrate.dc_id, migrate.token)
+                    .await?;
+                match imported {
+                    tl::enums::auth::LoginToken::Success(_) => {
+                        let username = self.finalize(account_id, pending).await;
+                        Ok(QrOutcome::Connected { username })
+                    }
+                    tl::enums::auth::LoginToken::Token(token) => {
+                        let qr_url = token_to_url(&token.token);
+                        let expires_at = ts_to_dt(token.expires);
+                        self.pending
+                            .lock()
+                            .await
+                            .insert(account_id.to_string(), pending);
+                        Ok(QrOutcome::Waiting { qr_url, expires_at })
+                    }
+                    tl::enums::auth::LoginToken::MigrateTo(_) => {
+                        self.pending
+                            .lock()
+                            .await
+                            .insert(account_id.to_string(), pending);
+                        bail!("DC migratsiya takrorlandi");
+                    }
+                }
+            }
+            Err(err) if rpc_is(&err, "SESSION_PASSWORD_NEEDED") => {
+                let mut pending = pending;
+                pending.awaiting_password = true;
+                self.pending
+                    .lock()
+                    .await
+                    .insert(account_id.to_string(), pending);
+                Ok(QrOutcome::NeedPassword)
+            }
+            Err(err) => {
+                pending.runner.abort();
+                Err(anyhow!(err).context("QR holatini tekshirishda xato"))
+            }
+        }
+    }
+
+    /// 2FA paroli bilan QR login'ni yakunlaydi.
+    pub async fn submit_qr_password(&self, account_id: &str, password: &str) -> Result<QrOutcome> {
+        let pending = self
+            .pending
+            .lock()
+            .await
+            .remove(account_id)
+            .ok_or_else(|| anyhow!("QR sessiya topilmadi, qaytadan boshlang"))?;
+
+        let password_info = pending
+            .client
+            .invoke(&tl::functions::account::GetPassword {})
+            .await
+            .map_err(|err| anyhow!(err).context("2FA parol ma'lumotini olib bo'lmadi"))?;
+        let tl::enums::account::Password::Password(password_info) = password_info;
+        let token = PasswordToken::new(password_info);
+
+        match pending.client.check_password(token, password).await {
+            Ok(_) => {
+                let username = self.finalize(account_id, pending).await;
+                Ok(QrOutcome::Connected { username })
+            }
+            Err(SignInError::InvalidPassword(_)) => {
+                let mut pending = pending;
+                pending.awaiting_password = true;
+                self.pending
+                    .lock()
+                    .await
+                    .insert(account_id.to_string(), pending);
+                Err(anyhow!("2FA parol noto'g'ri"))
+            }
+            Err(err) => {
+                pending.runner.abort();
+                Err(anyhow!(err).context("2FA parolni tasdiqlab bo'lmadi"))
+            }
+        }
+    }
+
+    pub async fn cancel_qr(&self, account_id: &str) {
+        if let Some(pending) = self.pending.lock().await.remove(account_id) {
+            pending.runner.abort();
+        }
+    }
+
+    pub async fn disconnect_account(&self, account_id: &str) {
+        if let Some(active) = self.clients.lock().await.remove(account_id) {
+            active.runner.abort();
+        }
+        self.cancel_qr(account_id).await;
+    }
+
+    /// Akkaunt sessiyasini (fayllarini) o'chiradi.
+    pub async fn remove_account_session(&self, account_id: &str) -> Result<()> {
+        self.disconnect_account(account_id).await;
+        let base = self.account_session_path(account_id);
+        for suffix in ["", "-wal", "-shm"] {
+            let p = PathBuf::from(format!("{}{}", base.display(), suffix));
+            let _ = tokio::fs::remove_file(&p).await;
+        }
+        Ok(())
+    }
+
+    async fn import_on_dc(
+        &self,
+        pending: &PendingQr,
+        dc_id: i32,
+        token: Vec<u8>,
+    ) -> Result<tl::enums::auth::LoginToken> {
+        let body = tl::functions::auth::ImportLoginToken { token }.to_bytes();
+        let resp = pending
+            .handle
+            .invoke_in_dc(dc_id, body)
+            .await
+            .map_err(|err| anyhow!(err).context("importLoginToken (DC) xato"))?;
+        let result = tl::enums::auth::LoginToken::from_bytes(&resp)
+            .map_err(|err| anyhow!("importLoginToken javobini o'qib bo'lmadi: {err}"))?;
+        // Kelajakdagi ulanishlar to'g'ri DC'ga borishi uchun home DC'ni yangilaymiz.
+        pending
+            .session
+            .set_home_dc_id(dc_id)
+            .await
+            .map_err(|err| anyhow!("home DC saqlanmadi: {err}"))?;
+        Ok(result)
+    }
+
+    /// Pending QR klientni faol klientlar ro'yxatiga ko'chiradi va username'ni qaytaradi.
+    async fn finalize(&self, account_id: &str, pending: PendingQr) -> Option<String> {
+        let username = match pending.client.get_me().await {
+            Ok(me) => me.username().map(|s| s.to_string()),
+            Err(_) => None,
+        };
+        let mut clients = self.clients.lock().await;
+        if let Some(old) = clients.insert(
+            account_id.to_string(),
+            ActiveClient {
+                client: pending.client,
+                runner: pending.runner,
+            },
+        ) {
+            old.runner.abort();
+        }
+        username
+    }
+
+    async fn connect(
+        &self,
+        api_id: i32,
+        session_path: &Path,
+    ) -> Result<(Client, SenderPoolFatHandle, Arc<SqliteSession>, JoinHandle<()>)> {
+        if let Some(parent) = session_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let sp = session_path
+            .to_str()
+            .ok_or_else(|| anyhow!("Session path UTF-8 emas"))?;
+        let session = Arc::new(SqliteSession::open(sp).await?);
+        let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
+        let client = Client::new(handle.clone());
+        let runner = tokio::spawn(runner.run());
+        Ok((client, handle, session, runner))
+    }
+
+    /// Berilgan `query` (key) bo'yicha GLOBAL sponsored qidiruv (`contacts.getSponsoredPeers`).
     pub async fn get_sponsored_peers(&self, client: &Client, query: &str) -> Result<Vec<AdResult>> {
         let query_trimmed = query.trim();
         if query_trimmed.is_empty() {
@@ -230,14 +388,12 @@ impl TelegramService {
         for peer in data.peers {
             let tl::enums::SponsoredPeer::Peer(peer) = peer;
             let Some((username, title)) = resolve_peer(&peer.peer, &data.chats, &data.users) else {
-                // username yo'q (link yasab bo'lmaydi) — o'tkazib yuboramiz.
                 continue;
             };
 
             let username_lc = username.to_lowercase();
             let url = format!("https://t.me/{username}");
             let random_id_hex = to_hex(&peer.random_id);
-            // Barqaror fingerprint: bir xil key bir xil kanalni topsa, natija takrorlanmaydi.
             let fingerprint = format!("{query_lc}:{username_lc}");
 
             out.push(AdResult {
@@ -261,43 +417,42 @@ impl TelegramService {
 
         Ok(out)
     }
-
-    async fn connect(&self, api_id: i32) -> Result<(Client, JoinHandle<()>)> {
-        if let Some(parent) = self.session_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        let session_path = self
-            .session_path
-            .to_str()
-            .ok_or_else(|| anyhow!("Session path UTF-8 emas"))?;
-        let session = Arc::new(SqliteSession::open(session_path).await?);
-        let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
-        let client = Client::new(handle);
-        let runner = tokio::spawn(runner.run());
-        Ok((client, runner))
-    }
-
-    async fn set_active(&self, client: Client, runner: JoinHandle<()>) {
-        if let Some(old) = self
-            .active
-            .lock()
-            .await
-            .replace(ActiveClient { client, runner })
-        {
-            old.runner.abort();
-        }
-    }
-
-    async fn restore_pending(&self, pending: PendingLogin) {
-        if let Some(old) = self.pending.lock().await.replace(pending) {
-            old.runner.abort();
-        }
-    }
 }
 
-/// Sponsored peer (Peer) ni topilgan chats/users ro'yxati orqali (username, title)
-/// ga aylantiradi. Username topilmasa None — chunki order linkini yasab bo'lmaydi.
+/// RPC xatosining nomi berilganga mosligini tekshiradi (xato zanjiri bo'ylab).
+fn rpc_is(err: &grammers_mtsender::InvocationError, name: &str) -> bool {
+    matches!(err, grammers_mtsender::InvocationError::Rpc(rpc) if rpc.name == name)
+}
+
+fn token_to_url(token: &[u8]) -> String {
+    format!("tg://login?token={}", base64url(token))
+}
+
+fn ts_to_dt(secs: i32) -> DateTime<Utc> {
+    DateTime::from_timestamp(secs as i64, 0).unwrap_or_else(Utc::now)
+}
+
+fn base64url(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(n & 63) as usize] as char);
+        }
+    }
+    out
+}
+
 fn resolve_peer(
     peer: &tl::enums::Peer,
     chats: &[tl::enums::Chat],
@@ -330,7 +485,6 @@ fn resolve_peer(
     }
 }
 
-/// Asosiy username (yoki birinchi aktiv qo'shimcha username) ni qaytaradi.
 fn primary_username(
     username: Option<&str>,
     usernames: Option<&[tl::enums::Username]>,
