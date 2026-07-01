@@ -42,7 +42,7 @@ http://127.0.0.1:8080
 ```bash
 HOST=0.0.0.0
 PORT=8080
-PUBLIC_DOMAIN=avto-feruz-aka.vipads.uz
+PUBLIC_DOMAIN=avto-xujim-feruz-aka.vipads.uz
 ADMIN_USERNAME=Feruz
 ADMIN_PASSWORD=Feruzboy
 STATE_PATH=data/state.json
@@ -89,7 +89,7 @@ WantedBy=multi-user.target
 
 ```nginx
 server {
-    server_name avto-feruz-aka.vipads.uz;
+    server_name avto-xujim-feruz-aka.vipads.uz;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -104,7 +104,7 @@ server {
 SSL uchun odatda:
 
 ```bash
-certbot --nginx -d avto-feruz-aka.vipads.uz
+certbot --nginx -d avto-xujim-feruz-aka.vipads.uz
 ```
 
 ## Admin panel oqimi

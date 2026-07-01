@@ -6,7 +6,6 @@ use crate::models::{
 use crate::telegram::normalize_channel_ref;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
-use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{error, info};
@@ -278,7 +277,7 @@ async fn scan_inner(
         }
     };
 
-    let action_logs = process_scan_actions(state, &settings, &added_items).await;
+    let action_logs = process_scan_actions(state, &settings, &collected, &added_items).await;
     scan_logs.extend(action_logs);
 
     if let Err(err) = state.store.mark_keywords_checked(&keywords, now).await {
@@ -290,11 +289,7 @@ async fn scan_inner(
     }
 
     // Yakuniy log: har bir key bo'yicha kim qidirgani va nima chiqqani —
-    // har bir reklama uchun status (oq ro'yxat / yangi / takror) va necha marta chiqqani.
-    let added_fingerprints: HashSet<&str> = added_items
-        .iter()
-        .map(|item| item.fingerprint.as_str())
-        .collect();
+    // har bir reklama uchun status (oq ro'yxat / order yuborilgan / xato) va necha marta chiqqani.
     let mut detail_lines: Vec<String> = Vec::new();
     for query in &keywords {
         let account_label = query_accounts
@@ -325,10 +320,10 @@ async fn scan_inner(
             let count = seen_counts.get(&ad.fingerprint).copied().unwrap_or(1);
             let status = if in_whitelist {
                 "OQ RO'YXAT kanali — order yuborilmaydi"
-            } else if added_fingerprints.contains(ad.fingerprint.as_str()) {
-                "YANGI — order yuboriladi"
+            } else if state.store.is_ordered(&ad.fingerprint).await {
+                "order yuborilgan"
             } else {
-                "takror — avval topilgan, order yo'q"
+                "ORDER YUBORILMADI — xatoga qarang"
             };
             detail_lines.push(format!(
                 "  • @{} ({}) — {status}. Jami {count}-marta chiqishi.",
@@ -375,6 +370,7 @@ async fn scan_inner(
 async fn process_scan_actions(
     state: &AppState,
     settings: &Settings,
+    collected: &[AdResult],
     added: &[AdResult],
 ) -> Vec<PanelLog> {
     let mut logs = Vec::new();
@@ -419,18 +415,21 @@ async fn process_scan_actions(
         }
     }
 
-    // 2) Order — oq ro'yxatda BO'LMAGAN har bir YANGI topilgan reklama uchun
-    //    darhol order yuboriladi. Oldingi order tarixi/holati umuman tekshirilmaydi.
-    //    Bir xil reklama qayta topilsa (yangi emas) — hech narsa qilinmaydi.
-    let mut handled_links: HashSet<String> = HashSet::new();
-
-    for ad in added {
+    // 2) Order — oq ro'yxatda BO'LMAGAN va hali order OLMAGAN har bir reklama
+    //    uchun darhol order yuboriladi (qachon topilganidan qat'i nazar).
+    //    Order yuborilgani `ordered` to'plamida belgilanadi — bir reklamaga
+    //    faqat bir marta. SMM'dan order holati umuman so'ralmaydi.
+    for ad in collected {
         let target = ad
             .target_channel
             .clone()
             .or_else(|| normalize_channel_ref(&ad.url));
         // Oq ro'yxatda bo'lsa order yo'q; qolgan hammasi order oladi.
         if find_list_match(target.as_deref(), &ad.url, &settings.whitelist_channels).is_some() {
+            continue;
+        }
+        // Bu reklamaga order allaqachon yuborilgan — qayta yubormaymiz.
+        if state.store.is_ordered(&ad.fingerprint).await {
             continue;
         }
         let normalized_target = target.as_deref().and_then(normalize_channel_ref);
@@ -446,8 +445,7 @@ async fn process_scan_actions(
         };
 
         for order_key in matched_order_keys(settings, &ad.matched_keywords) {
-            let link_key = order_key.text.trim().to_lowercase();
-            if link_key.is_empty() || !handled_links.insert(link_key) {
+            if order_key.text.trim().is_empty() {
                 continue;
             }
 
@@ -481,6 +479,8 @@ async fn process_scan_actions(
                     log.order_id = outcome.order_id.clone();
                     log.raw_response = Some(outcome.raw_response);
 
+                    // Shu reklamaga order berildi deb belgilaymiz — qayta yuborilmaydi.
+                    let _ = state.store.mark_ordered(&ad.fingerprint).await;
                     let _ = state
                         .store
                         .upsert_order_record(OrderRecord {
@@ -498,7 +498,7 @@ async fn process_scan_actions(
                     log.level = "error".to_string();
                     log.title = "Order yuborishda xato".to_string();
                     log.message = format!(
-                        "{} topildi, lekin SMMMAIN order yuborilmadi. Link: {}. Xato: {err}",
+                        "{} topildi, lekin SMMMAIN order yuborilmadi. Link: {}. Xato: {err}. Keyingi skanда qayta uriniladi.",
                         matched.display, order_key.text
                     );
                     log.raw_response = Some(err.to_string());

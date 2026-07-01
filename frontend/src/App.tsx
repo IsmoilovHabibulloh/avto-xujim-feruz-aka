@@ -470,7 +470,7 @@ function App() {
               VIP Ads
             </Typography>
             <Typography variant="caption" sx={{ opacity: 0.8 }} noWrap>
-              avto-feruz-aka.vipads.uz
+              avto-xujim-feruz-aka.vipads.uz
             </Typography>
           </Box>
           <Tooltip title="Yangilash">

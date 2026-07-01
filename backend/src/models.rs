@@ -114,6 +114,10 @@ pub struct PersistedState {
     /// Har bir reklama (fingerprint) jami necha marta qaytarilgani.
     #[serde(default)]
     pub seen_counts: HashMap<String, u64>,
+    /// Order yuborib bo'lingan reklamalar (fingerprint). Oq ro'yxatda bo'lmagan
+    /// reklama shu to'plamda bo'lmasa — order oladi (qachon topilganidan qat'i nazar).
+    #[serde(default)]
+    pub ordered: HashSet<String>,
     #[serde(default)]
     pub logs: Vec<PanelLog>,
     #[serde(default)]
@@ -130,6 +134,7 @@ impl Default for PersistedState {
             results: Vec::new(),
             seen: HashSet::new(),
             seen_counts: HashMap::new(),
+            ordered: HashSet::new(),
             logs: Vec::new(),
             orders: HashMap::new(),
             accounts: Vec::new(),
