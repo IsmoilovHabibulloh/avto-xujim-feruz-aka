@@ -1,10 +1,10 @@
 use crate::models::{
-    AdResult, DEFAULT_SMMMAIN_SERVICE_ID, KeywordRule, OrderRecord, PanelLog, PersistedState,
-    Settings, TelegramAccount, TelegramSettings,
+    AdResult, KeywordRule, OrderRecord, PanelLog, PersistedState, Settings, TelegramAccount,
+    TelegramSettings,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::sync::RwLock;
 
@@ -55,7 +55,6 @@ impl Store {
         {
             let mut state = self.inner.write().await;
             state.settings = clean.clone();
-            trim_results(&mut state);
         }
         self.save().await?;
         Ok(clean)
@@ -70,31 +69,42 @@ impl Store {
         Ok(telegram)
     }
 
-    pub async fn push_results(&self, mut incoming: Vec<AdResult>) -> Result<Vec<AdResult>> {
+    /// Topilgan reklamalarni saqlaydi. Qaytaradi: (yangi qo'shilganlar,
+    /// har bir fingerprint jami necha marta chiqqani).
+    pub async fn push_results(
+        &self,
+        mut incoming: Vec<AdResult>,
+    ) -> Result<(Vec<AdResult>, HashMap<String, u64>)> {
         if incoming.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), HashMap::new()));
         }
 
-        let added_items = {
+        let (added_items, counts) = {
             let mut state = self.inner.write().await;
             let mut added_items = Vec::new();
+            let mut counts = HashMap::new();
 
             for item in incoming.drain(..) {
+                let count = state
+                    .seen_counts
+                    .entry(item.fingerprint.clone())
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+                counts.insert(item.fingerprint.clone(), *count);
                 if state.seen.insert(item.fingerprint.clone()) {
                     state.results.insert(0, item.clone());
                     added_items.push(item);
                 }
             }
 
-            trim_results(&mut state);
-            added_items
+            (added_items, counts)
         };
 
         if !added_items.is_empty() {
             self.save().await?;
         }
 
-        Ok(added_items)
+        Ok((added_items, counts))
     }
 
     pub async fn clear_results(&self) -> Result<()> {
@@ -102,15 +112,10 @@ impl Store {
             let mut state = self.inner.write().await;
             state.results.clear();
             state.seen.clear();
+            state.seen_counts.clear();
             state.orders.clear();
         }
         self.save().await
-    }
-
-    /// Berilgan link (key matni) uchun oxirgi order yozuvini qaytaradi.
-    pub async fn order_record(&self, link: &str) -> Option<OrderRecord> {
-        let key = link.trim().to_lowercase();
-        self.inner.read().await.orders.get(&key).cloned()
     }
 
     /// Order yozuvini yangilaydi va diskka saqlaydi (haqiqiy order yuborilganda).
@@ -121,22 +126,6 @@ impl Store {
             state.orders.insert(key, record);
         }
         self.save().await
-    }
-
-    /// Order holatini xotirada yangilaydi (diskka yozmaydi — bu faqat kuzatuv
-    /// ma'lumoti va har skanда saqlash diskni ortiqcha yuklamasligi uchun).
-    pub async fn touch_order_status(
-        &self,
-        link: &str,
-        status: Option<String>,
-        checked_at: DateTime<Utc>,
-    ) {
-        let key = link.trim().to_lowercase();
-        let mut state = self.inner.write().await;
-        if let Some(record) = state.orders.get_mut(&key) {
-            record.status = status;
-            record.last_checked_at = Some(checked_at);
-        }
     }
 
     pub async fn push_logs(&self, mut logs: Vec<PanelLog>) -> Result<usize> {
@@ -217,6 +206,41 @@ impl Store {
         self.save().await
     }
 
+    /// Akkauntning Telegram profil ma'lumotlarini yangilaydi (label ham yangilanadi).
+    pub async fn update_account_profile(
+        &self,
+        id: &str,
+        me: &crate::telegram::MeInfo,
+    ) -> Result<()> {
+        let changed = {
+            let mut state = self.inner.write().await;
+            if let Some(account) = state.accounts.iter_mut().find(|a| a.id == id) {
+                account.username = me.username.clone();
+                account.first_name = me.first_name.clone();
+                account.last_name = me.last_name.clone();
+                account.phone = me.phone.clone();
+                account.telegram_id = me.telegram_id;
+                let full_name = [me.first_name.as_deref(), me.last_name.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !full_name.is_empty() {
+                    account.label = Some(full_name);
+                } else if let Some(u) = &me.username {
+                    account.label = Some(format!("@{u}"));
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.save().await?;
+        }
+        Ok(())
+    }
+
     pub async fn remove_account(&self, id: &str) -> Result<()> {
         {
             let mut state = self.inner.write().await;
@@ -225,11 +249,7 @@ impl Store {
         self.save().await
     }
 
-    pub async fn set_account_flood(
-        &self,
-        id: &str,
-        until: DateTime<Utc>,
-    ) -> Result<()> {
+    pub async fn set_account_flood(&self, id: &str, until: DateTime<Utc>) -> Result<()> {
         let changed = {
             let mut state = self.inner.write().await;
             if let Some(account) = state.accounts.iter_mut().find(|a| a.id == id) {
@@ -269,7 +289,6 @@ impl Store {
 
 fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.interval_seconds = settings.interval_seconds.clamp(2, 3600);
-    settings.max_results = settings.max_results.clamp(50, 5000);
     let legacy_keywords = normalize_list(std::mem::take(&mut settings.keywords));
     settings.keyword_rules = normalize_keyword_rules(
         settings.keyword_rules,
@@ -278,7 +297,6 @@ fn sanitize_settings(mut settings: Settings) -> Settings {
     );
     sync_legacy_keywords(&mut settings);
     settings.channels = normalize_list(settings.channels);
-    settings.blacklist_channels = normalize_list(settings.blacklist_channels);
     settings.whitelist_channels = normalize_list(settings.whitelist_channels);
     settings.order_quantity = settings.order_quantity.clamp(1, 1_000_000);
     settings
@@ -325,9 +343,6 @@ fn normalize_keyword_rules(
 
         rule.interval_seconds = rule.interval_seconds.clamp(2, 86_400);
         rule.order_quantity = rule.order_quantity.clamp(1, 1_000_000);
-        if rule.service_id == 0 {
-            rule.service_id = DEFAULT_SMMMAIN_SERVICE_ID;
-        }
         if rule.enabled {
             rule.next_check_at = rule.last_checked_at.map(|last_checked_at| {
                 last_checked_at + Duration::seconds(rule.interval_seconds as i64)
@@ -348,13 +363,6 @@ fn sync_legacy_keywords(settings: &mut Settings) {
         .filter(|rule| rule.enabled)
         .map(|rule| rule.text.clone())
         .collect();
-}
-
-fn trim_results(state: &mut PersistedState) {
-    let max = state.settings.max_results;
-    if state.results.len() > max {
-        state.results.truncate(max);
-    }
 }
 
 fn trim_logs(state: &mut PersistedState) {

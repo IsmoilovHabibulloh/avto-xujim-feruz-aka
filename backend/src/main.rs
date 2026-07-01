@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     let static_dir = env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/dist".to_string());
     let smmmain_api_key = env::var("SMMMAIN_API_KEY").unwrap_or_default();
     let smmmain_api_url =
-        env::var("SMMMAIN_API_URL").unwrap_or_else(|_| "https://smmmain.com/api/v2".to_string());
+        env::var("SMMMAIN_API_URL").unwrap_or_else(|_| "https://smm.vipads.uz/api/v2".to_string());
 
     let store = Arc::new(Store::load(state_path).await?);
     seed_telegram_from_env(&store).await?;
@@ -43,12 +43,16 @@ async fn main() -> Result<()> {
     let app_state = AppState {
         store,
         telegram: Arc::new(TelegramService::new(session_path)),
-        smmmain: Arc::new(SmmMainService::new(smmmain_api_key, smmmain_api_url, 875)),
+        smmmain: Arc::new(SmmMainService::new(
+            smmmain_api_key,
+            smmmain_api_url,
+            crate::models::DEFAULT_SMMMAIN_SERVICE_ID,
+        )),
         sessions: Arc::new(RwLock::new(HashMap::new())),
         runtime: Arc::new(RwLock::new(RuntimeInfo::default())),
         rr: Arc::new(AtomicUsize::new(0)),
-        admin_username: env::var("ADMIN_USERNAME").unwrap_or_else(|_| "Izzatillo".to_string()),
-        admin_password: env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "Izzatilloaka".to_string()),
+        admin_username: env::var("ADMIN_USERNAME").unwrap_or_else(|_| "Feruz".to_string()),
+        admin_password: env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "Feruzboy".to_string()),
     };
 
     // Mavjud akkauntlarni fonда ulab qo'yamiz (status to'g'ri ko'rinishi uchun).
@@ -152,6 +156,10 @@ async fn migrate_legacy_session(store: &Store, legacy_session: &Path) -> Result<
             id,
             label: Some(label),
             username: None,
+            first_name: None,
+            last_name: None,
+            phone: settings.phone.clone(),
+            telegram_id: None,
             created_at: chrono::Utc::now(),
             last_used_at: None,
             flood_until: None,

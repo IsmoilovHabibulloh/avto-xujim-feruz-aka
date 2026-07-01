@@ -2,12 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const DEFAULT_SMMMAIN_SERVICE_ID: u64 = 875;
+pub const DEFAULT_SMMMAIN_SERVICE_ID: u64 = 39;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
     #[serde(default = "default_interval_seconds")]
     pub interval_seconds: u64,
     #[serde(default)]
@@ -17,27 +15,20 @@ pub struct Settings {
     #[serde(default)]
     pub channels: Vec<String>,
     #[serde(default)]
-    pub blacklist_channels: Vec<String>,
-    #[serde(default)]
     pub whitelist_channels: Vec<String>,
     #[serde(default = "default_order_quantity")]
     pub order_quantity: u64,
-    #[serde(default = "default_max_results")]
-    pub max_results: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            enabled: default_enabled(),
             interval_seconds: default_interval_seconds(),
             keywords: Vec::new(),
             keyword_rules: Vec::new(),
             channels: Vec::new(),
-            blacklist_channels: Vec::new(),
             whitelist_channels: Vec::new(),
             order_quantity: default_order_quantity(),
-            max_results: default_max_results(),
         }
     }
 }
@@ -50,8 +41,6 @@ pub struct KeywordRule {
     pub interval_seconds: u64,
     #[serde(default = "default_order_quantity")]
     pub order_quantity: u64,
-    #[serde(default = "default_smmmain_service_id")]
-    pub service_id: u64,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -66,7 +55,6 @@ impl KeywordRule {
             text,
             interval_seconds,
             order_quantity: default_order_quantity(),
-            service_id: default_smmmain_service_id(),
             enabled: true,
             last_checked_at: None,
             next_check_at: None,
@@ -82,16 +70,8 @@ fn default_interval_seconds() -> u64 {
     5
 }
 
-fn default_max_results() -> usize {
-    500
-}
-
 fn default_order_quantity() -> u64 {
     100
-}
-
-fn default_smmmain_service_id() -> u64 {
-    DEFAULT_SMMMAIN_SERVICE_ID
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -131,6 +111,9 @@ pub struct PersistedState {
     pub results: Vec<AdResult>,
     #[serde(default)]
     pub seen: HashSet<String>,
+    /// Har bir reklama (fingerprint) jami necha marta qaytarilgani.
+    #[serde(default)]
+    pub seen_counts: HashMap<String, u64>,
     #[serde(default)]
     pub logs: Vec<PanelLog>,
     #[serde(default)]
@@ -146,6 +129,7 @@ impl Default for PersistedState {
             telegram: TelegramSettings::default(),
             results: Vec::new(),
             seen: HashSet::new(),
+            seen_counts: HashMap::new(),
             logs: Vec::new(),
             orders: HashMap::new(),
             accounts: Vec::new(),
@@ -161,6 +145,14 @@ pub struct TelegramAccount {
     pub label: Option<String>,
     #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub first_name: Option<String>,
+    #[serde(default)]
+    pub last_name: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub telegram_id: Option<i64>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub last_used_at: Option<DateTime<Utc>>,
@@ -303,6 +295,10 @@ pub struct AccountStatus {
     pub id: String,
     pub label: Option<String>,
     pub username: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub phone: Option<String>,
+    pub telegram_id: Option<i64>,
     pub connected: bool,
     pub flooded: bool,
     pub flood_until: Option<DateTime<Utc>>,
@@ -326,6 +322,19 @@ pub struct QrStartResponse {
 #[derive(Clone, Debug, Deserialize)]
 pub struct AccountIdRequest {
     pub account_id: String,
+}
+
+/// Qo'lda scan so'rovi: `keyword` berilsa faqat o'sha key tekshiriladi.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ScanRunRequest {
+    #[serde(default)]
+    pub keyword: Option<String>,
+}
+
+/// Qo'lda bitta order yuborish so'rovi (hech qanday tekshiruvsiz, darhol).
+#[derive(Clone, Debug, Deserialize)]
+pub struct OrderSendRequest {
+    pub keyword: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

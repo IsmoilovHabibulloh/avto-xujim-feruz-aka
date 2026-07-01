@@ -19,6 +19,7 @@ a {
 
 .panel-shell {
   min-height: 100vh;
+  padding-bottom: env(safe-area-inset-bottom);
   background:
     linear-gradient(180deg, rgba(77, 0, 110, 0.08), rgba(255, 193, 7, 0.07) 42%, rgba(247, 242, 250, 1)),
     #f7f2fa;

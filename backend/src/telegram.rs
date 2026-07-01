@@ -47,7 +47,17 @@ pub enum QrOutcome {
     /// Skanерlandi, lekin akkauntda 2FA bor — parol kerak.
     NeedPassword,
     /// Ulandi.
-    Connected { username: Option<String> },
+    Connected { me: MeInfo },
+}
+
+/// Ulangan akkauntning Telegram profil ma'lumotlari.
+#[derive(Clone, Debug, Default)]
+pub struct MeInfo {
+    pub username: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub phone: Option<String>,
+    pub telegram_id: Option<i64>,
 }
 
 impl TelegramService {
@@ -65,7 +75,8 @@ impl TelegramService {
     }
 
     pub fn account_session_path(&self, account_id: &str) -> PathBuf {
-        self.session_dir.join(format!("userbot-{account_id}.session"))
+        self.session_dir
+            .join(format!("userbot-{account_id}.session"))
     }
 
     /// Akkaunt uchun ulangan (avtorizatsiyalangan) klientni qaytaradi. Kesh bo'lsa
@@ -194,8 +205,8 @@ impl TelegramService {
                 Ok(QrOutcome::Waiting { qr_url, expires_at })
             }
             Ok(tl::enums::auth::LoginToken::Success(_)) => {
-                let username = self.finalize(account_id, pending).await;
-                Ok(QrOutcome::Connected { username })
+                let me = self.finalize(account_id, pending).await;
+                Ok(QrOutcome::Connected { me })
             }
             Ok(tl::enums::auth::LoginToken::MigrateTo(migrate)) => {
                 // Akkaunt boshqa DC'da — o'sha DC'ga importLoginToken yuboramiz.
@@ -204,8 +215,8 @@ impl TelegramService {
                     .await?;
                 match imported {
                     tl::enums::auth::LoginToken::Success(_) => {
-                        let username = self.finalize(account_id, pending).await;
-                        Ok(QrOutcome::Connected { username })
+                        let me = self.finalize(account_id, pending).await;
+                        Ok(QrOutcome::Connected { me })
                     }
                     tl::enums::auth::LoginToken::Token(token) => {
                         let qr_url = token_to_url(&token.token);
@@ -260,8 +271,8 @@ impl TelegramService {
 
         match pending.client.check_password(token, password).await {
             Ok(_) => {
-                let username = self.finalize(account_id, pending).await;
-                Ok(QrOutcome::Connected { username })
+                let me = self.finalize(account_id, pending).await;
+                Ok(QrOutcome::Connected { me })
             }
             Err(SignInError::InvalidPassword(_)) => {
                 let mut pending = pending;
@@ -326,12 +337,9 @@ impl TelegramService {
         Ok(result)
     }
 
-    /// Pending QR klientni faol klientlar ro'yxatiga ko'chiradi va username'ni qaytaradi.
-    async fn finalize(&self, account_id: &str, pending: PendingQr) -> Option<String> {
-        let username = match pending.client.get_me().await {
-            Ok(me) => me.username().map(|s| s.to_string()),
-            Err(_) => None,
-        };
+    /// Pending QR klientni faol klientlar ro'yxatiga ko'chiradi va profil ma'lumotini qaytaradi.
+    async fn finalize(&self, account_id: &str, pending: PendingQr) -> MeInfo {
+        let me = Self::fetch_me(&pending.client).await;
         let mut clients = self.clients.lock().await;
         if let Some(old) = clients.insert(
             account_id.to_string(),
@@ -342,14 +350,47 @@ impl TelegramService {
         ) {
             old.runner.abort();
         }
-        username
+        me
+    }
+
+    /// Klientdan o'z profil ma'lumotlarini oladi.
+    async fn fetch_me(client: &Client) -> MeInfo {
+        match client.get_me().await {
+            Ok(me) => MeInfo {
+                username: me.username().map(|s| s.to_string()),
+                first_name: me.first_name().map(|s| s.to_string()),
+                last_name: me.last_name().map(|s| s.to_string()),
+                phone: me.phone().map(|s| s.to_string()),
+                telegram_id: Some(me.id().bare_id_unchecked()),
+            },
+            Err(_) => MeInfo::default(),
+        }
+    }
+
+    /// Keshda ulangan akkauntning profil ma'lumotini oladi (tarmoqqa yangi ulanmaydi).
+    pub async fn account_me(&self, account_id: &str) -> Option<MeInfo> {
+        let client = {
+            let clients = self.clients.lock().await;
+            clients.get(account_id).map(|active| active.client.clone())
+        }?;
+        let me = Self::fetch_me(&client).await;
+        if me.telegram_id.is_some() {
+            Some(me)
+        } else {
+            None
+        }
     }
 
     async fn connect(
         &self,
         api_id: i32,
         session_path: &Path,
-    ) -> Result<(Client, SenderPoolFatHandle, Arc<SqliteSession>, JoinHandle<()>)> {
+    ) -> Result<(
+        Client,
+        SenderPoolFatHandle,
+        Arc<SqliteSession>,
+        JoinHandle<()>,
+    )> {
         if let Some(parent) = session_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -433,8 +474,7 @@ fn ts_to_dt(secs: i32) -> DateTime<Utc> {
 }
 
 fn base64url(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;

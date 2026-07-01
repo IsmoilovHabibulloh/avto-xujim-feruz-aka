@@ -2,22 +2,18 @@ export type KeywordRule = {
   text: string;
   interval_seconds: number;
   order_quantity: number;
-  service_id: number;
   enabled: boolean;
   last_checked_at?: string | null;
   next_check_at?: string | null;
 };
 
 export type Settings = {
-  enabled: boolean;
   interval_seconds: number;
   keywords: string[];
   keyword_rules: KeywordRule[];
   channels: string[];
-  blacklist_channels: string[];
   whitelist_channels: string[];
   order_quantity: number;
-  max_results: number;
 };
 
 export type TelegramSettings = {
@@ -84,6 +80,10 @@ export type AccountStatus = {
   id: string;
   label?: string | null;
   username?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  phone?: string | null;
+  telegram_id?: number | null;
   connected: boolean;
   flooded: boolean;
   flood_until?: string | null;

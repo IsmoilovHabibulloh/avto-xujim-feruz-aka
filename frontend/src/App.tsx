@@ -39,6 +39,7 @@ import {
   QrCode,
   RefreshCw,
   Save,
+  Send,
   Trash2
 } from 'lucide-react';
 import QRCodeLib from 'qrcode';
@@ -52,20 +53,16 @@ import {
   PanelLog,
   QrPollResponse,
   QrStartResponse,
-  SmmBalance,
   apiFetch
 } from './api';
 
 const emptySettings: Settings = {
-  enabled: true,
   interval_seconds: 5,
   keywords: [],
   keyword_rules: [],
   channels: [],
-  blacklist_channels: [],
   whitelist_channels: [],
-  order_quantity: 100,
-  max_results: 500
+  order_quantity: 100
 };
 
 function App() {
@@ -73,7 +70,7 @@ function App() {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const [token, setToken] = useState(() => localStorage.getItem('vipads_token'));
-  const [loginUsername, setLoginUsername] = useState('Izzatillo');
+  const [loginUsername, setLoginUsername] = useState('Feruz');
   const [loginPassword, setLoginPassword] = useState('');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [settings, setSettings] = useState<Settings>(emptySettings);
@@ -86,8 +83,6 @@ function App() {
   const [keywordInput, setKeywordInput] = useState('');
   const [keywordIntervalInput, setKeywordIntervalInput] = useState('5');
   const [keywordQuantityInput, setKeywordQuantityInput] = useState('100');
-  const [keywordServiceIdInput, setKeywordServiceIdInput] = useState('875');
-  const [blacklistInput, setBlacklistInput] = useState('');
   const [whitelistInput, setWhitelistInput] = useState('');
 
   // Foydalanuvchi sozlamalarni tahrirlaganini kuzatamiz. Poll (har interval'da)
@@ -237,12 +232,6 @@ function App() {
     [commitSettings]
   );
 
-  const setScannerEnabled = (enabled: boolean) => {
-    const next = { ...settingsRef.current, enabled };
-    setSettings(next);
-    void commitSettings(next, enabled ? 'Skaner boshlandi' : "Skaner to'xtatildi");
-  };
-
   const syncKeywordSettings = (rules: KeywordRule[]) => ({
     keyword_rules: rules,
     keywords: rules
@@ -260,7 +249,6 @@ function App() {
     const base = settingsRef.current;
     const interval = clampNumber(Number(keywordIntervalInput), 2, 86400, 5);
     const quantity = clampNumber(Number(keywordQuantityInput), 1, 1000000, base.order_quantity || 100);
-    const serviceId = clampNumber(Number(keywordServiceIdInput), 1, 10000000, 875);
     const existing = new Set(base.keyword_rules.map((rule) => rule.text.toLowerCase()));
     const nextRules = [...base.keyword_rules];
 
@@ -270,7 +258,6 @@ function App() {
           text: item,
           interval_seconds: interval,
           order_quantity: quantity,
-          service_id: serviceId,
           enabled: true,
           last_checked_at: null,
           next_check_at: null
@@ -326,7 +313,7 @@ function App() {
     void commitSettings(next, "Key o'chirildi");
   };
 
-  const addListItem = (field: 'blacklist_channels' | 'whitelist_channels', value: string) => {
+  const addListItem = (field: 'whitelist_channels', value: string) => {
     const items = value
       .split(',')
       .map((item) => item.trim())
@@ -337,12 +324,11 @@ function App() {
       [field]: Array.from(new Set([...settingsRef.current[field], ...items]))
     };
     setSettings(next);
-    if (field === 'blacklist_channels') setBlacklistInput('');
-    if (field === 'whitelist_channels') setWhitelistInput('');
+    setWhitelistInput('');
     void commitSettings(next, "Ro'yxat saqlandi");
   };
 
-  const removeListItem = (field: 'blacklist_channels' | 'whitelist_channels', value: string) => {
+  const removeListItem = (field: 'whitelist_channels', value: string) => {
     const next = {
       ...settingsRef.current,
       [field]: settingsRef.current[field].filter((item) => item !== value)
@@ -351,14 +337,34 @@ function App() {
     void commitSettings(next, "Ro'yxat saqlandi");
   };
 
-  const runScan = async () => {
+  const sendOrderNow = async (keyword: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await apiFetch<{ message: string }>('/order/send', token, {
+        method: 'POST',
+        body: JSON.stringify({ keyword })
+      });
+      setNotice(data.message);
+      await refresh();
+    } catch (err) {
+      if (!handleAuthError(err)) {
+        setError(err instanceof Error ? err.message : 'Order xato');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runScan = async (keyword?: string) => {
     setBusy(true);
     setError(null);
     try {
       const data = await apiFetch<{ message: string }>('/scan/run', token, {
-        method: 'POST'
+        method: 'POST',
+        body: JSON.stringify(keyword ? { keyword } : {})
       });
-      setNotice(data.message);
+      setNotice(keyword ? `"${keyword}" tekshirildi: ${data.message}` : data.message);
       await refresh();
     } catch (err) {
       if (!handleAuthError(err)) {
@@ -451,7 +457,9 @@ function App() {
   }
 
   const connected = Boolean(dashboard?.status.telegram_connected);
-  const scannerOn = Boolean(dashboard?.settings.enabled);
+  const activeKeys = (dashboard?.settings.keyword_rules ?? settings.keyword_rules).filter(
+    (rule) => rule.enabled && rule.text.trim()
+  ).length;
 
   return (
     <Box className="panel-shell" sx={{ pb: 4 }}>
@@ -462,7 +470,7 @@ function App() {
               VIP Ads
             </Typography>
             <Typography variant="caption" sx={{ opacity: 0.8 }} noWrap>
-              izzatillo-aka.vipads.uz
+              avto-feruz-aka.vipads.uz
             </Typography>
           </Box>
           <Tooltip title="Yangilash">
@@ -481,16 +489,8 @@ function App() {
         <Box sx={{ px: 1.5, pb: 1.25, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
           <StatusChip ok={connected} label={connected ? 'Userbot ulangan' : 'Userbot ulanmagan'} />
           <StatusChip
-            ok={scannerOn}
-            label={
-              scannerOn
-                ? `Skaner: har ${dashboard?.settings.interval_seconds ?? settings.interval_seconds}s`
-                : "Skaner to'xtagan"
-            }
-          />
-          <StatusChip
-            ok={!dashboard?.smm_balance.error && Boolean(dashboard?.smm_balance.configured)}
-            label={`Balans: ${formatBalance(dashboard?.smm_balance)}`}
+            ok={activeKeys > 0}
+            label={activeKeys > 0 ? `${activeKeys} ta key ishlayapti` : "Aktiv key yo'q"}
           />
         </Box>
       </AppBar>
@@ -514,15 +514,6 @@ function App() {
               )}
             </Stack>
           )}
-
-          <ScannerControl
-            scannerOn={scannerOn}
-            scanning={Boolean(dashboard?.status.scanning)}
-            busy={busy}
-            onStart={() => setScannerEnabled(true)}
-            onStop={() => setScannerEnabled(false)}
-            onRunNow={runScan}
-          />
 
           <StatsBar dashboard={dashboard} loading={loading} />
 
@@ -552,7 +543,6 @@ function App() {
                   setSettings={editSettings}
                   saving={saving}
                   isMobile={isMobile}
-                  setScannerEnabled={setScannerEnabled}
                   commitNow={commitNow}
                   keywordInput={keywordInput}
                   setKeywordInput={setKeywordInput}
@@ -560,16 +550,14 @@ function App() {
                   setKeywordIntervalInput={setKeywordIntervalInput}
                   keywordQuantityInput={keywordQuantityInput}
                   setKeywordQuantityInput={setKeywordQuantityInput}
-                  keywordServiceIdInput={keywordServiceIdInput}
-                  setKeywordServiceIdInput={setKeywordServiceIdInput}
-                  blacklistInput={blacklistInput}
-                  setBlacklistInput={setBlacklistInput}
                   whitelistInput={whitelistInput}
                   setWhitelistInput={setWhitelistInput}
                   addKeywordRules={addKeywordRules}
                   updateKeywordRule={updateKeywordRule}
                   setRuleEnabled={setRuleEnabled}
                   removeKeywordRule={removeKeywordRule}
+                  runKeyNow={(keyword) => void runScan(keyword)}
+                  sendOrderNow={(keyword) => void sendOrderNow(keyword)}
                   addListItem={addListItem}
                   removeListItem={removeListItem}
                   busy={busy}
@@ -590,8 +578,7 @@ function App() {
                 <ResultsPanel
                   results={dashboard?.results ?? []}
                   whitelist={dashboard?.settings.whitelist_channels ?? []}
-                  blacklist={dashboard?.settings.blacklist_channels ?? []}
-                  runScan={runScan}
+                  runScan={() => void runScan()}
                   clearResults={clearResults}
                   busy={busy}
                   isMobile={isMobile}
@@ -615,96 +602,34 @@ function StatusChip({ ok, label }: { ok: boolean; label: string }) {
       icon={ok ? <CircleCheck size={15} /> : <CircleOff size={15} />}
       label={label}
       color={ok ? 'secondary' : 'default'}
-      sx={{ fontWeight: 800, maxWidth: '100%' }}
+      sx={{
+        fontWeight: 800,
+        maxWidth: '100%',
+        ...(!ok && {
+          bgcolor: 'rgba(255,255,255,0.16)',
+          color: '#fff',
+          '& .MuiChip-icon': { color: 'rgba(255,255,255,0.85)' }
+        })
+      }}
     />
   );
 }
 
-function ScannerControl({
-  scannerOn,
-  scanning,
-  busy,
-  onStart,
-  onStop,
-  onRunNow
-}: {
-  scannerOn: boolean;
-  scanning: boolean;
-  busy: boolean;
-  onStart: () => void;
-  onStop: () => void;
-  onRunNow: () => void;
-}) {
-  return (
-    <Paper sx={{ p: { xs: 1.5, md: 2 }, borderLeft: '4px solid', borderColor: scannerOn ? 'secondary.main' : 'divider' }}>
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        spacing={1.5}
-        sx={{ alignItems: { xs: 'stretch', sm: 'center' }, justifyContent: 'space-between' }}
-      >
-        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-          <Chip
-            color={scannerOn ? 'secondary' : 'default'}
-            label={scannerOn ? (scanning ? 'Tekshiryapti' : 'Yoqilgan') : "To'xtagan"}
-            icon={scannerOn ? <CircleCheck size={16} /> : <CircleOff size={16} />}
-            sx={{ fontWeight: 800 }}
-          />
-          {scanning && <CircularProgress size={18} />}
-        </Stack>
-        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', justifyContent: { xs: 'stretch', sm: 'flex-end' } }}>
-          <Button
-            variant="contained"
-            color="primary"
-            onClick={onStart}
-            disabled={busy || scannerOn}
-            startIcon={<Play size={18} />}
-            sx={{ flex: { xs: 1, sm: 'initial' } }}
-          >
-            Boshlash
-          </Button>
-          <Button
-            variant="outlined"
-            color="primary"
-            onClick={onStop}
-            disabled={busy || !scannerOn}
-            startIcon={<CircleOff size={18} />}
-            sx={{ flex: { xs: 1, sm: 'initial' } }}
-          >
-            To'xtatish
-          </Button>
-          <Button
-            variant="contained"
-            color="secondary"
-            onClick={onRunNow}
-            disabled={busy}
-            startIcon={<RefreshCw size={18} />}
-            sx={{ flex: { xs: 1, sm: 'initial' } }}
-          >
-            Hozir tekshirish
-          </Button>
-        </Stack>
-      </Stack>
-    </Paper>
-  );
-}
 
 function StatsBar({ dashboard, loading }: { dashboard: Dashboard | null; loading: boolean }) {
   const status = dashboard?.status;
+  const activeKeys = (dashboard?.settings.keyword_rules ?? []).filter(
+    (rule) => rule.enabled && rule.text.trim()
+  ).length;
   const items: [string, string][] = [
-    ['API balans', formatBalance(dashboard?.smm_balance)],
+    ['Aktiv keylar', String(activeKeys)],
     ['Natijalar', String(status?.total_results ?? 0)],
     ['Loglar', String(status?.total_logs ?? 0)],
     ['Oxirgi scan', formatDate(status?.last_run_at)],
     ['Keyingi scan', formatDate(status?.next_run_at)],
     [
       'Holat',
-      !dashboard?.settings.enabled
-        ? "To'xtagan"
-        : status?.scanning
-          ? 'Tekshiryapti'
-          : loading
-            ? 'Yuklanmoqda'
-            : 'Yoqilgan'
+      status?.scanning ? 'Tekshiryapti' : loading ? 'Yuklanmoqda' : activeKeys > 0 ? 'Ishlayapti' : 'Kutmoqda'
     ]
   ];
 
@@ -735,7 +660,6 @@ type SettingsPanelProps = {
   setSettings: (settings: Settings | ((current: Settings) => Settings)) => void;
   saving: boolean;
   isMobile: boolean;
-  setScannerEnabled: (enabled: boolean) => void;
   commitNow: (successMessage?: string) => void;
   keywordInput: string;
   setKeywordInput: (value: string) => void;
@@ -743,18 +667,16 @@ type SettingsPanelProps = {
   setKeywordIntervalInput: (value: string) => void;
   keywordQuantityInput: string;
   setKeywordQuantityInput: (value: string) => void;
-  keywordServiceIdInput: string;
-  setKeywordServiceIdInput: (value: string) => void;
-  blacklistInput: string;
-  setBlacklistInput: (value: string) => void;
   whitelistInput: string;
   setWhitelistInput: (value: string) => void;
   addKeywordRules: () => void;
   updateKeywordRule: (index: number, patch: Partial<KeywordRule>) => void;
   setRuleEnabled: (index: number, enabled: boolean) => void;
   removeKeywordRule: (index: number) => void;
-  addListItem: (field: 'blacklist_channels' | 'whitelist_channels', value: string) => void;
-  removeListItem: (field: 'blacklist_channels' | 'whitelist_channels', value: string) => void;
+  runKeyNow: (keyword: string) => void;
+  sendOrderNow: (keyword: string) => void;
+  addListItem: (field: 'whitelist_channels', value: string) => void;
+  removeListItem: (field: 'whitelist_channels', value: string) => void;
   busy: boolean;
 };
 
@@ -764,7 +686,6 @@ function SettingsPanel(props: SettingsPanelProps) {
     setSettings,
     saving,
     isMobile,
-    setScannerEnabled,
     commitNow,
     keywordInput,
     setKeywordInput,
@@ -772,65 +693,46 @@ function SettingsPanel(props: SettingsPanelProps) {
     setKeywordIntervalInput,
     keywordQuantityInput,
     setKeywordQuantityInput,
-    keywordServiceIdInput,
-    setKeywordServiceIdInput,
-    blacklistInput,
-    setBlacklistInput,
     whitelistInput,
     setWhitelistInput,
     addKeywordRules,
     updateKeywordRule,
     setRuleEnabled,
     removeKeywordRule,
+    runKeyNow,
+    sendOrderNow,
     addListItem,
-    removeListItem
+    removeListItem,
+    busy
   } = props;
 
   return (
     <Stack spacing={3}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-        <Save size={16} />
-        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-          O'zgarishlar avtomatik saqlanadi
-        </Typography>
-        {saving && <CircularProgress size={14} />}
-      </Stack>
-
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '220px 1fr 1fr' }, gap: 2 }}>
-        <Paper variant="outlined" sx={{ p: 2, display: 'flex', alignItems: 'center' }}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={settings.enabled}
-                onChange={(event) => setScannerEnabled(event.target.checked)}
-              />
-            }
-            label={settings.enabled ? 'Avto skaner yoqilgan' : "Avto skaner to'xtagan"}
-          />
-        </Paper>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1.5}
+        sx={{ alignItems: { xs: 'stretch', sm: 'center' }, justifyContent: 'space-between' }}
+      >
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+          <Save size={16} />
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+            O'zgarishlar avtomatik saqlanadi
+          </Typography>
+          {saving && <CircularProgress size={14} />}
+        </Stack>
         <TextField
-          label="Interval sekund"
+          label="Skaner davri (sekund)"
           type="number"
+          size="small"
           value={settings.interval_seconds}
           onChange={(event) =>
             setSettings((current) => ({ ...current, interval_seconds: Number(event.target.value) }))
           }
           onBlur={() => commitNow()}
           slotProps={{ htmlInput: { min: 2, max: 3600 } }}
-          fullWidth
+          sx={{ width: { xs: '100%', sm: 200 } }}
         />
-        <TextField
-          label="Natija tarixi limiti"
-          type="number"
-          value={settings.max_results}
-          onChange={(event) =>
-            setSettings((current) => ({ ...current, max_results: Number(event.target.value) }))
-          }
-          onBlur={() => commitNow()}
-          slotProps={{ htmlInput: { min: 50, max: 5000 } }}
-          fullWidth
-        />
-      </Box>
+      </Stack>
 
       <KeywordRulesEditor
         rules={settings.keyword_rules}
@@ -841,36 +743,25 @@ function SettingsPanel(props: SettingsPanelProps) {
         setIntervalInput={setKeywordIntervalInput}
         quantityInput={keywordQuantityInput}
         setQuantityInput={setKeywordQuantityInput}
-        serviceIdInput={keywordServiceIdInput}
-        setServiceIdInput={setKeywordServiceIdInput}
         onAdd={addKeywordRules}
         onUpdate={updateKeywordRule}
         onCommit={commitNow}
         onToggle={setRuleEnabled}
         onRemove={removeKeywordRule}
+        onRunKey={runKeyNow}
+        onSendOrder={sendOrderNow}
+        busy={busy}
       />
 
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
-        <ListEditor
-          title="Qora ro'yxat (order shu kanallarga)"
-          placeholder="@kanal yoki t.me/kanal"
-          value={blacklistInput}
-          onChange={setBlacklistInput}
-          items={settings.blacklist_channels}
-          onAdd={() => addListItem('blacklist_channels', blacklistInput)}
-          onRemove={(item) => removeListItem('blacklist_channels', item)}
-        />
-
-        <ListEditor
-          title="Oq ro'yxat (order yo'q)"
-          placeholder="@kanal yoki t.me/kanal"
-          value={whitelistInput}
-          onChange={setWhitelistInput}
-          items={settings.whitelist_channels}
-          onAdd={() => addListItem('whitelist_channels', whitelistInput)}
-          onRemove={(item) => removeListItem('whitelist_channels', item)}
-        />
-      </Box>
+      <ListEditor
+        title="Oq ro'yxat (bu kanallarga order yuborilmaydi, qolgan hammasiga yuboriladi)"
+        placeholder="@kanal yoki t.me/kanal"
+        value={whitelistInput}
+        onChange={setWhitelistInput}
+        items={settings.whitelist_channels}
+        onAdd={() => addListItem('whitelist_channels', whitelistInput)}
+        onRemove={(item) => removeListItem('whitelist_channels', item)}
+      />
     </Stack>
   );
 }
@@ -884,13 +775,14 @@ function KeywordRulesEditor({
   setIntervalInput,
   quantityInput,
   setQuantityInput,
-  serviceIdInput,
-  setServiceIdInput,
   onAdd,
   onUpdate,
   onCommit,
   onToggle,
-  onRemove
+  onRemove,
+  onRunKey,
+  onSendOrder,
+  busy
 }: {
   rules: KeywordRule[];
   isMobile: boolean;
@@ -900,13 +792,14 @@ function KeywordRulesEditor({
   setIntervalInput: (value: string) => void;
   quantityInput: string;
   setQuantityInput: (value: string) => void;
-  serviceIdInput: string;
-  setServiceIdInput: (value: string) => void;
   onAdd: () => void;
   onUpdate: (index: number, patch: Partial<KeywordRule>) => void;
   onCommit: () => void;
   onToggle: (index: number, enabled: boolean) => void;
   onRemove: (index: number) => void;
+  onRunKey: (keyword: string) => void;
+  onSendOrder: (keyword: string) => void;
+  busy: boolean;
 }) {
   return (
     <Stack spacing={1.5}>
@@ -914,7 +807,7 @@ function KeywordRulesEditor({
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: '1.5fr 130px 130px 130px auto' },
+          gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: '1.5fr 150px 150px auto' },
           gap: 1
         }}
       >
@@ -953,17 +846,6 @@ function KeywordRulesEditor({
           slotProps={{ htmlInput: { min: 1, max: 1000000 } }}
           fullWidth
         />
-        <TextField
-          label="SMM ID"
-          value={serviceIdInput}
-          onChange={(event) => setServiceIdInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') onAdd();
-          }}
-          type="number"
-          slotProps={{ htmlInput: { min: 1 } }}
-          fullWidth
-        />
         <Button variant="outlined" onClick={onAdd} startIcon={<Plus size={18} />} sx={{ minWidth: 118 }}>
           Qo'shish
         </Button>
@@ -980,6 +862,9 @@ function KeywordRulesEditor({
               onCommit={onCommit}
               onToggle={onToggle}
               onRemove={onRemove}
+              onRunKey={onRunKey}
+              onSendOrder={onSendOrder}
+              busy={busy}
             />
           ))}
           {!rules.length && <EmptyHint text="Bo'sh" />}
@@ -993,10 +878,9 @@ function KeywordRulesEditor({
                 <TableCell>Key</TableCell>
                 <TableCell sx={{ width: 150 }}>Kutish</TableCell>
                 <TableCell sx={{ width: 130 }}>Quality</TableCell>
-                <TableCell sx={{ width: 130 }}>SMM ID</TableCell>
                 <TableCell sx={{ width: 160 }}>Oxirgi</TableCell>
                 <TableCell sx={{ width: 160 }}>Keyingi</TableCell>
-                <TableCell align="right" sx={{ width: 72 }} />
+                <TableCell align="right" sx={{ width: 150 }} />
               </TableRow>
             </TableHead>
             <TableBody>
@@ -1042,20 +926,31 @@ function KeywordRulesEditor({
                       fullWidth
                     />
                   </TableCell>
-                  <TableCell>
-                    <TextField
-                      value={rule.service_id}
-                      onChange={(event) => onUpdate(index, { service_id: Number(event.target.value) })}
-                      onBlur={() => onCommit()}
-                      type="number"
-                      size="small"
-                      slotProps={{ htmlInput: { min: 1 } }}
-                      fullWidth
-                    />
-                  </TableCell>
                   <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(rule.last_checked_at)}</TableCell>
                   <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(rule.next_check_at)}</TableCell>
-                  <TableCell align="right">
+                  <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                    <Tooltip title={`1 ta buyurtma yuborish (quality ${rule.order_quantity})`}>
+                      <span>
+                        <IconButton
+                          color="primary"
+                          onClick={() => onSendOrder(rule.text)}
+                          disabled={busy || !rule.text.trim()}
+                        >
+                          <Send size={18} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                    <Tooltip title="Hozir tekshirish">
+                      <span>
+                        <IconButton
+                          color="secondary"
+                          onClick={() => onRunKey(rule.text)}
+                          disabled={busy || !rule.text.trim()}
+                        >
+                          <Play size={18} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
                     <Tooltip title="O'chirish">
                       <IconButton color="error" onClick={() => onRemove(index)}>
                         <Trash2 size={18} />
@@ -1066,7 +961,7 @@ function KeywordRulesEditor({
               ))}
               {!rules.length && (
                 <TableRow>
-                  <TableCell colSpan={8}>
+                  <TableCell colSpan={7}>
                     <EmptyHint text="Bo'sh" />
                   </TableCell>
                 </TableRow>
@@ -1085,7 +980,10 @@ function RuleCard({
   onUpdate,
   onCommit,
   onToggle,
-  onRemove
+  onRemove,
+  onRunKey,
+  onSendOrder,
+  busy
 }: {
   rule: KeywordRule;
   index: number;
@@ -1093,6 +991,9 @@ function RuleCard({
   onCommit: () => void;
   onToggle: (index: number, enabled: boolean) => void;
   onRemove: (index: number) => void;
+  onRunKey: (keyword: string) => void;
+  onSendOrder: (keyword: string) => void;
+  busy: boolean;
 }) {
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
@@ -1102,7 +1003,7 @@ function RuleCard({
             control={
               <Switch checked={rule.enabled} onChange={(event) => onToggle(index, event.target.checked)} />
             }
-            label={rule.enabled ? 'Yoqilgan' : "O'chiq"}
+            label={rule.enabled ? 'Avto yoqilgan' : "Avto o'chiq"}
           />
           <Tooltip title="O'chirish">
             <IconButton color="error" onClick={() => onRemove(index)}>
@@ -1117,7 +1018,7 @@ function RuleCard({
           onBlur={() => onCommit()}
           fullWidth
         />
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
           <TextField
             label="Kutish"
             value={rule.interval_seconds}
@@ -1137,14 +1038,6 @@ function RuleCard({
             type="number"
             slotProps={{ htmlInput: { min: 1, max: 1000000 } }}
           />
-          <TextField
-            label="SMM ID"
-            value={rule.service_id}
-            onChange={(event) => onUpdate(index, { service_id: Number(event.target.value) })}
-            onBlur={() => onCommit()}
-            type="number"
-            slotProps={{ htmlInput: { min: 1 } }}
-          />
         </Box>
         <Stack direction="row" sx={{ justifyContent: 'space-between' }}>
           <Typography variant="caption" color="text.secondary">
@@ -1153,6 +1046,28 @@ function RuleCard({
           <Typography variant="caption" color="text.secondary">
             Keyingi: {formatDate(rule.next_check_at)}
           </Typography>
+        </Stack>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={() => onSendOrder(rule.text)}
+            disabled={busy || !rule.text.trim()}
+            startIcon={<Send size={16} />}
+            sx={{ flex: 1, minHeight: 44 }}
+          >
+            1 ta buyurtma
+          </Button>
+          <Button
+            variant="outlined"
+            color="secondary"
+            onClick={() => onRunKey(rule.text)}
+            disabled={busy || !rule.text.trim()}
+            startIcon={<Play size={16} />}
+            sx={{ flex: 1, minHeight: 44 }}
+          >
+            Tekshirish
+          </Button>
         </Stack>
       </Stack>
     </Paper>
@@ -1491,36 +1406,81 @@ function AccountsPanel({
         <Typography variant="h6">Akkauntlar ({accounts.length})</Typography>
         {accounts.length === 0 && <EmptyHint text="Akkaunt yo'q — QR bilan qo'shing" />}
         <Stack spacing={1}>
-          {accounts.map((account) => (
-            <Paper key={account.id} variant="outlined" sx={{ p: 1.5 }}>
-              <Stack
-                direction="row"
-                sx={{ justifyContent: 'space-between', alignItems: 'center', gap: 1 }}
-              >
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography sx={{ fontWeight: 800 }} className="text-clamp">
-                    {account.label || account.username || account.id.slice(0, 8)}
-                  </Typography>
-                  <Stack direction="row" spacing={0.75} sx={{ mt: 0.5, flexWrap: 'wrap' }}>
+          {accounts.map((account, index) => {
+            const fullName = [account.first_name, account.last_name].filter(Boolean).join(' ');
+            const title = fullName || account.label || account.username || account.id.slice(0, 8);
+            return (
+              <Paper key={account.id} variant="outlined" sx={{ p: 1.5 }}>
+                <Stack
+                  direction="row"
+                  sx={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 1 }}
+                >
+                  <Stack direction="row" spacing={1.25} sx={{ minWidth: 0, alignItems: 'flex-start' }}>
                     <Chip
                       size="small"
-                      color={account.connected ? 'secondary' : 'default'}
-                      icon={account.connected ? <CircleCheck size={14} /> : <CircleOff size={14} />}
-                      label={account.connected ? 'Ulangan' : 'Ulanmagan'}
+                      color="primary"
+                      label={`#${index + 1}`}
+                      sx={{ fontWeight: 800, mt: 0.25 }}
                     />
-                    {account.flooded && (
-                      <Chip size="small" color="warning" label={`Limit: ${formatDate(account.flood_until)}`} />
-                    )}
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 800 }} className="text-clamp">
+                        {title}
+                      </Typography>
+                      <Stack
+                        direction="row"
+                        spacing={1.5}
+                        sx={{ mt: 0.25, flexWrap: 'wrap', rowGap: 0.25 }}
+                      >
+                        {account.username && (
+                          <Typography variant="body2" color="text.secondary" noWrap>
+                            @{account.username}
+                          </Typography>
+                        )}
+                        {account.phone && (
+                          <Typography variant="body2" color="text.secondary" noWrap>
+                            📞 +{account.phone.replace(/^\+/, '')}
+                          </Typography>
+                        )}
+                        {account.telegram_id != null && (
+                          <Typography variant="body2" color="text.secondary" noWrap>
+                            ID: {account.telegram_id}
+                          </Typography>
+                        )}
+                      </Stack>
+                      <Stack direction="row" spacing={0.75} sx={{ mt: 0.5, flexWrap: 'wrap', rowGap: 0.5 }}>
+                        <Chip
+                          size="small"
+                          color={account.connected ? 'secondary' : 'default'}
+                          icon={account.connected ? <CircleCheck size={14} /> : <CircleOff size={14} />}
+                          label={account.connected ? 'Ulangan' : 'Ulanmagan'}
+                        />
+                        {account.flooded && (
+                          <Chip size="small" color="warning" label={`Limit: ${formatDate(account.flood_until)}`} />
+                        )}
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={`Qo'shilgan: ${formatDate(account.created_at)}`}
+                        />
+                        {account.last_used_at && (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={`Oxirgi ishlatilgan: ${formatDate(account.last_used_at)}`}
+                          />
+                        )}
+                      </Stack>
+                    </Box>
                   </Stack>
-                </Box>
-                <Tooltip title="O'chirish">
-                  <IconButton color="error" onClick={() => removeAccount(account.id)}>
-                    <Trash2 size={18} />
-                  </IconButton>
-                </Tooltip>
-              </Stack>
-            </Paper>
-          ))}
+                  <Tooltip title="O'chirish">
+                    <IconButton color="error" onClick={() => removeAccount(account.id)}>
+                      <Trash2 size={18} />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
+              </Paper>
+            );
+          })}
         </Stack>
       </Stack>
     </Stack>
@@ -1530,7 +1490,6 @@ function AccountsPanel({
 function ResultsPanel({
   results,
   whitelist,
-  blacklist,
   runScan,
   clearResults,
   busy,
@@ -1538,7 +1497,6 @@ function ResultsPanel({
 }: {
   results: AdResult[];
   whitelist: string[];
-  blacklist: string[];
   runScan: () => void;
   clearResults: () => void;
   busy: boolean;
@@ -1558,12 +1516,12 @@ function ResultsPanel({
           <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
             <Chip
               size="small"
-              label="Oq ro'yxat"
+              label="Oq ro'yxat → order yo'q"
               sx={{ bgcolor: (theme) => alpha(theme.palette.success.main, 0.18), fontWeight: 700 }}
             />
             <Chip
               size="small"
-              label="Qora ro'yxat → order"
+              label="Qolganlar → order"
               sx={{ bgcolor: (theme) => alpha(theme.palette.error.main, 0.16), fontWeight: 700 }}
             />
           </Stack>
@@ -1588,7 +1546,7 @@ function ResultsPanel({
       {isMobile ? (
         <Stack spacing={1.25}>
           {sorted.map((item) => (
-            <ResultCard key={item.id} item={item} tone={classifyResult(item, whitelist, blacklist)} />
+            <ResultCard key={item.id} item={item} tone={classifyResult(item, whitelist)} />
           ))}
           {!sorted.length && <EmptyHint text="Natija yo'q" />}
         </Stack>
@@ -1611,7 +1569,7 @@ function ResultsPanel({
             </TableHead>
             <TableBody>
               {sorted.map((item) => (
-                <TableRow key={item.id} hover sx={rowToneSx(classifyResult(item, whitelist, blacklist))}>
+                <TableRow key={item.id} hover sx={rowToneSx(classifyResult(item, whitelist))}>
                   <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(item.found_at)}</TableCell>
                   <TableCell className="text-clamp">
                     <Typography sx={{ fontWeight: 800 }}>{item.channel_title || item.channel}</Typography>
@@ -1794,7 +1752,7 @@ function LogsPanel({
             </TableHead>
             <TableBody>
               {logs.map((log) => {
-                const hasOrder = Boolean(log.service_id || log.quantity || log.order_id);
+                const hasOrder = Boolean(log.quantity || log.order_id);
                 return (
                   <TableRow key={log.id} hover>
                     <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(log.created_at)}</TableCell>
@@ -1816,7 +1774,6 @@ function LogsPanel({
                     <TableCell className="text-clamp" sx={{ maxWidth: 240 }}>
                       {hasOrder ? (
                         <>
-                          <Typography variant="body2">service: {log.service_id ?? '-'}</Typography>
                           <Typography variant="body2">soni: {log.quantity ?? '-'}</Typography>
                           <Typography variant="body2">order: {log.order_id ?? '-'}</Typography>
                           {log.order_link && (
@@ -1831,7 +1788,7 @@ function LogsPanel({
                         </Typography>
                       )}
                     </TableCell>
-                    <TableCell className="text-clamp" sx={{ maxWidth: 300 }}>
+                    <TableCell className="text-clamp" sx={{ maxWidth: 340, whiteSpace: 'pre-line' }}>
                       {log.raw_response || '—'}
                     </TableCell>
                   </TableRow>
@@ -1871,11 +1828,9 @@ function LogCard({ log }: { log: PanelLog }) {
         {log.keyword && <FieldRow label="Key">{log.keyword}</FieldRow>}
         {log.source_channel && <FieldRow label="Source">{log.source_channel}</FieldRow>}
         {log.target_channel && <FieldRow label="Target">{log.target_channel}</FieldRow>}
-        {(log.service_id || log.quantity || log.order_id) && (
+        {(log.quantity || log.order_id) && (
           <FieldRow label="Order">
-            <span>
-              {`s:${log.service_id ?? '-'} · q:${log.quantity ?? '-'} · #${log.order_id ?? '-'}`}
-            </span>
+            <span>{`q:${log.quantity ?? '-'} · #${log.order_id ?? '-'}`}</span>
           </FieldRow>
         )}
         {log.order_link && (
@@ -1890,7 +1845,7 @@ function LogCard({ log }: { log: PanelLog }) {
             variant="caption"
             color="text.secondary"
             className="text-clamp"
-            sx={{ display: 'block', mt: 0.5 }}
+            sx={{ display: 'block', mt: 0.5, whiteSpace: 'pre-line' }}
           >
             {log.raw_response}
           </Typography>
@@ -1963,8 +1918,8 @@ function normalizeChannelRef(raw?: string | null): string | null {
   return value ? value.toLowerCase() : null;
 }
 
-// Natija oq ro'yxatda bo'lsa 'white', qora ro'yxatda bo'lsa 'black' (oq ustun), aks holda null.
-function classifyResult(item: AdResult, whitelist: string[], blacklist: string[]): Tone {
+// Natija oq ro'yxatda bo'lsa 'white' (order yo'q), aks holda 'black' (order yuboriladi).
+function classifyResult(item: AdResult, whitelist: string[]): Tone {
   const candidates = new Set<string>();
   const target = normalizeChannelRef(item.target_channel);
   if (target) candidates.add(target);
@@ -1978,8 +1933,7 @@ function classifyResult(item: AdResult, whitelist: string[], blacklist: string[]
     });
 
   if (inList(whitelist)) return 'white';
-  if (inList(blacklist)) return 'black';
-  return null;
+  return 'black';
 }
 
 function rowToneSx(tone: Tone) {
@@ -2021,14 +1975,6 @@ function formatDate(value?: string | null) {
   });
 }
 
-function formatBalance(balance?: SmmBalance | null) {
-  if (!balance) return '-';
-  if (balance.error) return 'xato';
-  if (!balance.configured) return 'ulanmagan';
-  if (!balance.balance) return '-';
-  return [balance.balance, balance.currency].filter(Boolean).join(' ');
-}
-
 function formatChannel(value?: string | null) {
   if (!value) return '-';
   if (value.startsWith('+') || value.startsWith('http')) return value;
@@ -2039,14 +1985,12 @@ function normalizeSettings(settings: Settings): Settings {
   const keywordRules = settings.keyword_rules?.length
     ? settings.keyword_rules.map((rule) => ({
         ...rule,
-        order_quantity: rule.order_quantity || settings.order_quantity || 100,
-        service_id: rule.service_id || 875
+        order_quantity: rule.order_quantity || settings.order_quantity || 100
       }))
     : settings.keywords.map((keyword) => ({
         text: keyword,
         interval_seconds: settings.interval_seconds || 5,
         order_quantity: settings.order_quantity || 100,
-        service_id: 875,
         enabled: true,
         last_checked_at: null,
         next_check_at: null
@@ -2055,7 +1999,6 @@ function normalizeSettings(settings: Settings): Settings {
   return {
     ...settings,
     keyword_rules: keywordRules,
-    blacklist_channels: settings.blacklist_channels ?? [],
     whitelist_channels: settings.whitelist_channels ?? [],
     order_quantity: settings.order_quantity || 100,
     keywords: keywordRules

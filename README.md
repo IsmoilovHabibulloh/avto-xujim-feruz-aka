@@ -6,7 +6,7 @@ Rust + Grammers asosidagi Telegram Ads tekshiruvchi userbot va bitta serverdan i
 
 - Rust `axum` backend.
 - React + MUI admin panel.
-- Admin login: `Izzatillo` / `Izzatilloaka`.
+- Admin login: `Feruz` / `Feruzboy`.
 - Telegram userbot ulash: API ID, API hash, telefon, kod, 2FA parol.
 - `contacts.getSponsoredPeers` orqali har bir key (kalit so'z) bo'yicha GLOBAL sponsored qidiruv.
 - `messages.viewSponsoredMessage`, `messages.clickSponsoredMessage`, `messages.reportSponsoredMessage` chaqirilmaydi.
@@ -16,7 +16,7 @@ Rust + Grammers asosidagi Telegram Ads tekshiruvchi userbot va bitta serverdan i
 
 ## Muhim izoh
 
-Har bir key Telegram serveriga `contacts.getSponsoredPeers` orqali global qidiruv query sifatida yuboriladi. Server o'sha query bo'yicha sponsored kanallarni qaytaradi; topilgan kanal qora ro'yxatga mos kelsa SMM order yuboriladi (oq ro'yxat bo'lsa — yo'q).
+Har bir key Telegram serveriga `contacts.getSponsoredPeers` orqali global qidiruv query sifatida yuboriladi. Server o'sha query bo'yicha sponsored kanallarni qaytaradi; topilgan kanal oq ro'yxatda BO'LMASA SMM order yuboriladi (oq ro'yxatda bo'lsa — yo'q). Alohida qora ro'yxat yo'q.
 
 Bir xil reklama qayta topilsa, oldingi order holati tekshiriladi: bajarilgan bo'lsa qayta yuboriladi, bajarilmagan bo'lsa kutiladi; 10 daqiqada ham bajarilmasa baribir qayta yuboriladi.
 
@@ -42,9 +42,9 @@ http://127.0.0.1:8080
 ```bash
 HOST=0.0.0.0
 PORT=8080
-PUBLIC_DOMAIN=izzatillo-aka.vipads.uz
-ADMIN_USERNAME=Izzatillo
-ADMIN_PASSWORD=Izzatilloaka
+PUBLIC_DOMAIN=avto-feruz-aka.vipads.uz
+ADMIN_USERNAME=Feruz
+ADMIN_PASSWORD=Feruzboy
 STATE_PATH=data/state.json
 TELEGRAM_SESSION_PATH=data/userbot.session
 STATIC_DIR=frontend/dist
@@ -89,7 +89,7 @@ WantedBy=multi-user.target
 
 ```nginx
 server {
-    server_name izzatillo-aka.vipads.uz;
+    server_name avto-feruz-aka.vipads.uz;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -104,17 +104,17 @@ server {
 SSL uchun odatda:
 
 ```bash
-certbot --nginx -d izzatillo-aka.vipads.uz
+certbot --nginx -d avto-feruz-aka.vipads.uz
 ```
 
 ## Admin panel oqimi
 
-1. `Izzatillo` / `Izzatilloaka` bilan kiring.
+1. `Feruz` / `Feruzboy` bilan kiring.
 2. `Userbot` tabida API ID, API hash va telefon kiriting.
 3. `Kod olish` bosing.
 4. Telegramdan kelgan kodni kiriting.
 5. Agar 2FA yoqilgan bo'lsa, 2FA parolni kiriting.
-6. `Sozlamalar` tabida keylar (kalit so'zlar), interval va qora/oq ro'yxatni sozlang. Sozlamalar avtomatik saqlanadi.
+6. `Sozlamalar` tabida keylar (kalit so'zlar), interval va oq ro'yxatni sozlang. Sozlamalar avtomatik saqlanadi.
 7. `Natijalar` tabida avtomatik yoki qo'lda scan natijalarini ko'ring.
 
 ## Manbalar
