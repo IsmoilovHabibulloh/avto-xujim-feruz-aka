@@ -49,6 +49,7 @@ import {
   ApiError,
   Dashboard,
   KeywordRule,
+  KeywordStat,
   Settings,
   PanelLog,
   QrPollResponse,
@@ -578,6 +579,7 @@ function App() {
                 <ResultsPanel
                   results={dashboard?.results ?? []}
                   whitelist={dashboard?.settings.whitelist_channels ?? []}
+                  stats={dashboard?.stats_24h ?? []}
                   runScan={() => void runScan()}
                   clearResults={clearResults}
                   busy={busy}
@@ -1487,9 +1489,157 @@ function AccountsPanel({
   );
 }
 
+const DONUT_GREEN = ['#2e7d32', '#43a047', '#66bb6a', '#81c784', '#a5d6a7', '#c8e6c9'];
+const DONUT_RED = ['#c62828', '#e53935', '#ef5350', '#ff7043', '#ff8a65', '#ffab91'];
+
+function StatsDonuts({ stats }: { stats: KeywordStat[] }) {
+  if (!stats.length) {
+    return (
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Typography variant="h6" sx={{ mb: 0.5 }}>
+          So'nggi 24 soat — kalit so'zlar bo'yicha
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Hali ma'lumot yo'q — skaner reklama topgach diagramma shakllanadi.
+        </Typography>
+      </Paper>
+    );
+  }
+
+  return (
+    <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 } }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 1.5, flexWrap: 'wrap' }}>
+        <Typography variant="h6">So'nggi 24 soat — kalit so'zlar bo'yicha</Typography>
+        <Chip
+          size="small"
+          label="🟢 oq ro'yxat"
+          sx={{ bgcolor: (t) => alpha(t.palette.success.main, 0.16), fontWeight: 700 }}
+        />
+        <Chip
+          size="small"
+          label="🔴 order ketadi"
+          sx={{ bgcolor: (t) => alpha(t.palette.error.main, 0.16), fontWeight: 700 }}
+        />
+      </Stack>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', lg: 'repeat(3, 1fr)' },
+          gap: { xs: 1.5, md: 2 }
+        }}
+      >
+        {stats.map((stat) => (
+          <KeywordDonut key={stat.keyword} stat={stat} />
+        ))}
+      </Box>
+    </Paper>
+  );
+}
+
+function KeywordDonut({ stat }: { stat: KeywordStat }) {
+  const size = 150;
+  const stroke = 22;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+
+  let offset = 0;
+  let greenIdx = 0;
+  let redIdx = 0;
+  const arcs = stat.segments.map((seg) => {
+    const len = (seg.percent / 100) * circumference;
+    const color = seg.whitelisted
+      ? DONUT_GREEN[greenIdx++ % DONUT_GREEN.length]
+      : DONUT_RED[redIdx++ % DONUT_RED.length];
+    const dash = `${len} ${circumference - len}`;
+    const arc = { seg, color, dash, dashoffset: -offset };
+    offset += len;
+    return arc;
+  });
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 3 }}>
+      <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
+        <Box sx={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+            <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
+              <circle
+                cx={size / 2}
+                cy={size / 2}
+                r={radius}
+                fill="none"
+                stroke="#eee"
+                strokeWidth={stroke}
+              />
+              {arcs.map((arc, i) => (
+                <circle
+                  key={i}
+                  cx={size / 2}
+                  cy={size / 2}
+                  r={radius}
+                  fill="none"
+                  stroke={arc.color}
+                  strokeWidth={stroke}
+                  strokeDasharray={arc.dash}
+                  strokeDashoffset={arc.dashoffset}
+                  strokeLinecap="butt"
+                >
+                  <title>{`@${arc.seg.channel} — ${arc.seg.percent.toFixed(1)}% (${arc.seg.count})`}</title>
+                </circle>
+              ))}
+            </g>
+          </svg>
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+              px: 1
+            }}
+          >
+            <Typography sx={{ fontWeight: 800, fontSize: '0.95rem', lineHeight: 1 }} className="text-clamp">
+              {stat.keyword}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {stat.total} ta
+            </Typography>
+          </Box>
+        </Box>
+        <Stack spacing={0.5} sx={{ minWidth: 0, flex: 1 }}>
+          {stat.segments.map((seg, i) => (
+            <Stack key={seg.channel} direction="row" spacing={0.75} sx={{ alignItems: 'center', minWidth: 0 }}>
+              <Box
+                sx={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  bgcolor: seg.whitelisted
+                    ? DONUT_GREEN[stat.segments.slice(0, i).filter((s) => s.whitelisted).length % DONUT_GREEN.length]
+                    : DONUT_RED[stat.segments.slice(0, i).filter((s) => !s.whitelisted).length % DONUT_RED.length]
+                }}
+              />
+              <Typography variant="caption" sx={{ fontWeight: 700, flexShrink: 0 }}>
+                {seg.percent.toFixed(0)}%
+              </Typography>
+              <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+                @{seg.channel}
+              </Typography>
+            </Stack>
+          ))}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
 function ResultsPanel({
   results,
   whitelist,
+  stats,
   runScan,
   clearResults,
   busy,
@@ -1497,6 +1647,7 @@ function ResultsPanel({
 }: {
   results: AdResult[];
   whitelist: string[];
+  stats: KeywordStat[];
   runScan: () => void;
   clearResults: () => void;
   busy: boolean;
@@ -1506,6 +1657,8 @@ function ResultsPanel({
 
   return (
     <Stack spacing={2}>
+      <StatsDonuts stats={stats} />
+
       <Stack
         direction={{ xs: 'column', sm: 'row' }}
         spacing={1}

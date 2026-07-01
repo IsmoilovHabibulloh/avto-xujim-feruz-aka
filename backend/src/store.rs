@@ -1,6 +1,6 @@
 use crate::models::{
-    AdResult, KeywordRule, OrderRecord, PanelLog, PersistedState, Settings, TelegramAccount,
-    TelegramSettings,
+    AdResult, ChannelSegment, KeywordRule, KeywordStat, OrderRecord, PanelLog, PersistedState,
+    Settings, TelegramAccount, TelegramSettings,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -131,6 +131,111 @@ impl Store {
             state.ordered.insert(fingerprint.to_string());
         }
         self.save().await
+    }
+
+    /// So'nggi skanда topilgan kanallarni 24 soatlik statistikaga qo'shadi.
+    /// Har event: (kalit so'z, kanal username, kanal sarlavhasi).
+    pub async fn record_appearances(
+        &self,
+        events: &[(String, String, Option<String>)],
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let hour = now.timestamp() / 3600;
+        let min_hour = hour - 23;
+        {
+            let mut state = self.inner.write().await;
+            for (keyword, channel, title) in events {
+                let kw = keyword.trim().to_lowercase();
+                let ch = channel.trim().to_lowercase();
+                if kw.is_empty() || ch.is_empty() {
+                    continue;
+                }
+                let channels = state.stats.entry(kw).or_default();
+                let bucket = channels.entry(ch).or_default();
+                if title.is_some() {
+                    bucket.title = title.clone();
+                }
+                *bucket.hourly.entry(hour).or_insert(0) += 1;
+                bucket.hourly.retain(|h, _| *h >= min_hour);
+            }
+            // 24 soatdan eski (bo'sh) kanallar va kalit so'zlarni tozalaymiz.
+            for channels in state.stats.values_mut() {
+                channels.retain(|_, bucket| {
+                    bucket.hourly.retain(|h, _| *h >= min_hour);
+                    !bucket.hourly.is_empty()
+                });
+            }
+            state.stats.retain(|_, channels| !channels.is_empty());
+        }
+        self.save().await
+    }
+
+    /// So'nggi 24 soatlik statistikani donut uchun tayyor ko'rinishda qaytaradi.
+    /// `whitelist` — hozirgi oq ro'yxat (rang uchun).
+    pub async fn stats_24h(&self, whitelist: &[String], now: DateTime<Utc>) -> Vec<KeywordStat> {
+        let hour = now.timestamp() / 3600;
+        let min_hour = hour - 23;
+        let wl: HashSet<String> = whitelist
+            .iter()
+            .filter_map(|item| crate::telegram::normalize_channel_ref(item))
+            .collect();
+
+        let state = self.inner.read().await;
+        let mut out: Vec<KeywordStat> = Vec::new();
+
+        for (keyword, channels) in &state.stats {
+            let mut segments: Vec<ChannelSegment> = Vec::new();
+            let mut total: u64 = 0;
+
+            for (channel, bucket) in channels {
+                let count: u64 = bucket
+                    .hourly
+                    .iter()
+                    .filter(|(h, _)| **h >= min_hour)
+                    .map(|(_, c)| *c)
+                    .sum();
+                if count == 0 {
+                    continue;
+                }
+                total += count;
+                segments.push(ChannelSegment {
+                    channel: channel.clone(),
+                    title: bucket.title.clone(),
+                    whitelisted: wl.contains(channel),
+                    count,
+                    percent: 0.0,
+                });
+            }
+
+            if total == 0 {
+                continue;
+            }
+
+            let mut whitelist_count: u64 = 0;
+            for seg in &mut segments {
+                seg.percent = (seg.count as f64) * 100.0 / (total as f64);
+                if seg.whitelisted {
+                    whitelist_count += seg.count;
+                }
+            }
+            // Katta ulush oldinda tursin.
+            segments.sort_by(|a, b| b.count.cmp(&a.count));
+
+            let whitelist_percent = (whitelist_count as f64) * 100.0 / (total as f64);
+            out.push(KeywordStat {
+                keyword: keyword.clone(),
+                total,
+                whitelist_percent,
+                order_percent: 100.0 - whitelist_percent,
+                segments,
+            });
+        }
+
+        out.sort_by(|a, b| a.keyword.cmp(&b.keyword));
+        out
     }
 
     /// Kalit so'z uchun order slotini atomik band qiladi. Oxirgi orderdan

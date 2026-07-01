@@ -91,6 +91,22 @@ export type AccountStatus = {
   last_used_at?: string | null;
 };
 
+export type ChannelSegment = {
+  channel: string;
+  title?: string | null;
+  whitelisted: boolean;
+  count: number;
+  percent: number;
+};
+
+export type KeywordStat = {
+  keyword: string;
+  total: number;
+  whitelist_percent: number;
+  order_percent: number;
+  segments: ChannelSegment[];
+};
+
 export type Dashboard = {
   settings: Settings;
   telegram: TelegramSettings;
@@ -99,6 +115,7 @@ export type Dashboard = {
   results: AdResult[];
   logs: PanelLog[];
   accounts: AccountStatus[];
+  stats_24h: KeywordStat[];
 };
 
 export type LoginResponse = {

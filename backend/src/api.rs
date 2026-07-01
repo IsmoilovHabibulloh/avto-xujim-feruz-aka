@@ -179,6 +179,10 @@ async fn dashboard(
     require_auth(&headers, &state).await?;
     let snapshot = state.store.snapshot().await;
     let accounts = account_statuses(&state, &snapshot.accounts).await;
+    let stats_24h = state
+        .store
+        .stats_24h(&snapshot.settings.whitelist_channels, Utc::now())
+        .await;
     Ok(Json(DashboardResponse {
         settings: snapshot.settings,
         telegram: public_telegram_settings(snapshot.telegram),
@@ -187,6 +191,7 @@ async fn dashboard(
         results: snapshot.results,
         logs: snapshot.logs,
         accounts,
+        stats_24h,
     }))
 }
 

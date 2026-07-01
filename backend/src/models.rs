@@ -126,6 +126,9 @@ pub struct PersistedState {
     /// Har bir kalit so'z bo'yicha oxirgi order yuborilgan vaqt (1 daqiqalik limit uchun).
     #[serde(default)]
     pub last_order_at: HashMap<String, DateTime<Utc>>,
+    /// So'nggi 24 soat statistikasi: kalit so'z -> kanal -> soatlik hisoblagichlar.
+    #[serde(default)]
+    pub stats: HashMap<String, HashMap<String, ChannelBuckets>>,
     #[serde(default)]
     pub logs: Vec<PanelLog>,
     #[serde(default)]
@@ -144,6 +147,7 @@ impl Default for PersistedState {
             seen_counts: HashMap::new(),
             ordered: HashSet::new(),
             last_order_at: HashMap::new(),
+            stats: HashMap::new(),
             logs: Vec::new(),
             orders: HashMap::new(),
             accounts: Vec::new(),
@@ -189,6 +193,16 @@ pub struct OrderRecord {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub last_checked_at: Option<DateTime<Utc>>,
+}
+
+/// Bitta kanal uchun soatlik uchrashuv hisoblagichlari (24 soatlik statistika uchun).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ChannelBuckets {
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Absolyut soat (unix_ts / 3600) -> shu soatda necha marta uchraganini.
+    #[serde(default)]
+    pub hourly: HashMap<i64, u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -302,6 +316,28 @@ pub struct DashboardResponse {
     pub results: Vec<AdResult>,
     pub logs: Vec<PanelLog>,
     pub accounts: Vec<AccountStatus>,
+    /// So'nggi 24 soat statistikasi — har bir kalit so'z bo'yicha kanallar ulushi.
+    pub stats_24h: Vec<KeywordStat>,
+}
+
+/// Bitta kalit so'z bo'yicha so'nggi 24 soatdagi kanallar taqsimoti (donut uchun).
+#[derive(Clone, Debug, Serialize)]
+pub struct KeywordStat {
+    pub keyword: String,
+    pub total: u64,
+    pub whitelist_percent: f64,
+    pub order_percent: f64,
+    pub segments: Vec<ChannelSegment>,
+}
+
+/// Donut bo'lagi: bitta kanal, ulushi (foiz) va rangi (oq ro'yxatmi).
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelSegment {
+    pub channel: String,
+    pub title: Option<String>,
+    pub whitelisted: bool,
+    pub count: u64,
+    pub percent: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]

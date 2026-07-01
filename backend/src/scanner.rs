@@ -278,6 +278,25 @@ async fn scan_inner(
         }
     };
 
+    // 24 soatlik statistikaga har bir topilgan (kalit so'z, kanal) uchrashuvini yozamiz.
+    let appearances: Vec<(String, String, Option<String>)> = collected
+        .iter()
+        .flat_map(|ad| {
+            let channel = ad.channel.clone();
+            let title = ad.channel_title.clone();
+            ad.matched_keywords
+                .iter()
+                .map(move |kw| (kw.clone(), channel.clone(), title.clone()))
+        })
+        .collect();
+    if let Err(err) = state.store.record_appearances(&appearances, now).await {
+        scan_logs.push(PanelLog::new(
+            "error",
+            "Statistika saqlashda xato",
+            err.to_string(),
+        ));
+    }
+
     let (action_logs, statuses) =
         process_scan_actions(state, &settings, &collected, &added_items, now).await;
     scan_logs.extend(action_logs);
