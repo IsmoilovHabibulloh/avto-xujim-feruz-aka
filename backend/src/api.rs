@@ -338,6 +338,21 @@ async fn send_manual_order(
         .ok_or_else(|| ApiError::bad_request("Bunday key topilmadi"))?;
 
     let quantity = rule.order_quantity.max(1);
+
+    // QAT'IY QOIDA: shu kalit so'z bo'yicha oxirgi orderdan kamida 1 daqiqa o'tgan
+    // bo'lishi shart (qo'lda ham, avtomatik ham — bir xil limit).
+    let now = Utc::now();
+    if let Some(remaining) = state
+        .store
+        .reserve_keyword_order(&rule.text, crate::models::MIN_ORDER_GAP_SECS, now)
+        .await?
+    {
+        return Err(ApiError::bad_request(format!(
+            "Kalit so'z limiti: \"{}\" uchun {remaining} sekunddan keyin order yuboriladi (1 daqiqada 1 marta).",
+            rule.text
+        )));
+    }
+
     let mut log = PanelLog::new("info", "Qo'lda order", String::new());
     log.keyword = Some(rule.text.clone());
     log.source_channel = Some("Admin panel".to_string());
@@ -354,7 +369,6 @@ async fn send_manual_order(
         .await
     {
         Ok(outcome) => {
-            let now = Utc::now();
             let _ = state
                 .store
                 .upsert_order_record(crate::models::OrderRecord {

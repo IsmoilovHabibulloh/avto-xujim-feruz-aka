@@ -4,6 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 pub const DEFAULT_SMMMAIN_SERVICE_ID: u64 = 39;
 
+/// Bitta kalit so'z bo'yicha ketma-ket buyurtmalar orasidagi eng kam vaqt (sekund).
+/// Qat'iy qoida: natija (muvaffaqiyat/xato) qanday bo'lishidan qat'i nazar, bir key
+/// bo'yicha 1 daqiqada ko'pi bilan 1 marta order yuboriladi.
+pub const MIN_ORDER_GAP_SECS: i64 = 60;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_interval_seconds")]
@@ -118,6 +123,9 @@ pub struct PersistedState {
     /// reklama shu to'plamda bo'lmasa — order oladi (qachon topilganidan qat'i nazar).
     #[serde(default)]
     pub ordered: HashSet<String>,
+    /// Har bir kalit so'z bo'yicha oxirgi order yuborilgan vaqt (1 daqiqalik limit uchun).
+    #[serde(default)]
+    pub last_order_at: HashMap<String, DateTime<Utc>>,
     #[serde(default)]
     pub logs: Vec<PanelLog>,
     #[serde(default)]
@@ -135,6 +143,7 @@ impl Default for PersistedState {
             seen: HashSet::new(),
             seen_counts: HashMap::new(),
             ordered: HashSet::new(),
+            last_order_at: HashMap::new(),
             logs: Vec::new(),
             orders: HashMap::new(),
             accounts: Vec::new(),

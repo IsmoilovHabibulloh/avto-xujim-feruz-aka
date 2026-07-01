@@ -133,6 +133,41 @@ impl Store {
         self.save().await
     }
 
+    /// Kalit so'z uchun order slotini atomik band qiladi. Oxirgi orderdan
+    /// `min_gap_secs` o'tgan bo'lsa — vaqtni `now` ga o'rnatib `None` qaytaradi
+    /// (order yuborishga ruxsat). Aks holda qolgan sekundlarni qaytaradi (rad etildi,
+    /// slot band qilinmaydi). Muvaffaqiyat/xato natijadan qat'i nazar shu vaqt hisoblanadi.
+    pub async fn reserve_keyword_order(
+        &self,
+        keyword: &str,
+        min_gap_secs: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Option<i64>> {
+        let key = keyword.trim().to_lowercase();
+        let remaining = {
+            let mut state = self.inner.write().await;
+            match state.last_order_at.get(&key) {
+                Some(last) => {
+                    let elapsed = (now - *last).num_seconds();
+                    if elapsed < min_gap_secs {
+                        Some((min_gap_secs - elapsed).max(1))
+                    } else {
+                        state.last_order_at.insert(key, now);
+                        None
+                    }
+                }
+                None => {
+                    state.last_order_at.insert(key, now);
+                    None
+                }
+            }
+        };
+        if remaining.is_none() {
+            self.save().await?;
+        }
+        Ok(remaining)
+    }
+
     /// Order yozuvini yangilaydi va diskka saqlaydi (haqiqiy order yuborilganda).
     pub async fn upsert_order_record(&self, record: OrderRecord) -> Result<()> {
         let key = record.link.trim().to_lowercase();
