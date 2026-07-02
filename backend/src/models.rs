@@ -119,10 +119,6 @@ pub struct PersistedState {
     /// Har bir reklama (fingerprint) jami necha marta qaytarilgani.
     #[serde(default)]
     pub seen_counts: HashMap<String, u64>,
-    /// Order yuborib bo'lingan reklamalar (fingerprint). Oq ro'yxatda bo'lmagan
-    /// reklama shu to'plamda bo'lmasa — order oladi (qachon topilganidan qat'i nazar).
-    #[serde(default)]
-    pub ordered: HashSet<String>,
     /// Har bir kalit so'z bo'yicha oxirgi order yuborilgan vaqt (1 daqiqalik limit uchun).
     #[serde(default)]
     pub last_order_at: HashMap<String, DateTime<Utc>>,
@@ -145,7 +141,6 @@ impl Default for PersistedState {
             results: Vec::new(),
             seen: HashSet::new(),
             seen_counts: HashMap::new(),
-            ordered: HashSet::new(),
             last_order_at: HashMap::new(),
             stats: HashMap::new(),
             logs: Vec::new(),

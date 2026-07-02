@@ -113,22 +113,7 @@ impl Store {
             state.results.clear();
             state.seen.clear();
             state.seen_counts.clear();
-            state.ordered.clear();
             state.orders.clear();
-        }
-        self.save().await
-    }
-
-    /// Shu reklamaga (fingerprint) order yuborilganmi.
-    pub async fn is_ordered(&self, fingerprint: &str) -> bool {
-        self.inner.read().await.ordered.contains(fingerprint)
-    }
-
-    /// Reklamani "order yuborildi" deb belgilaydi va diskka saqlaydi.
-    pub async fn mark_ordered(&self, fingerprint: &str) -> Result<()> {
-        {
-            let mut state = self.inner.write().await;
-            state.ordered.insert(fingerprint.to_string());
         }
         self.save().await
     }

@@ -393,97 +393,110 @@ async fn process_scan_actions(
     let mut statuses: HashMap<String, String> = HashMap::new();
     let added_fps: HashSet<&str> = added.iter().map(|ad| ad.fingerprint.as_str()).collect();
 
+    // Reklamalarni kalit so'z bo'yicha guruhlaymiz. Order QARORI kalit so'z darajasida:
+    // shu key bo'yicha oq ro'yxatda BO'LMAGAN kamida bitta kanal topilsa va oxirgi
+    // orderdan 1 daqiqa o'tgan bo'lsa — bitta order yuboriladi. "Bir marta" cheklovi yo'q:
+    // kanal takror chiqsa ham har daqiqada order ketaveradi.
+    let mut by_keyword: HashMap<String, Vec<&AdResult>> = HashMap::new();
     for ad in collected {
-        let target = ad
-            .target_channel
-            .clone()
-            .or_else(|| normalize_channel_ref(&ad.url));
+        for keyword in &ad.matched_keywords {
+            by_keyword.entry(keyword.clone()).or_default().push(ad);
+        }
+    }
 
-        // 1) Oq ro'yxat — order yo'q. Log faqat yangi (added) reklama uchun bir marta.
-        if let Some(matched) =
-            find_list_match(target.as_deref(), &ad.url, &settings.whitelist_channels)
-        {
-            statuses.insert(
-                ad.fingerprint.clone(),
-                "OQ RO'YXAT kanali — order yuborilmaydi".to_string(),
-            );
-            if added_fps.contains(ad.fingerprint.as_str()) {
-                let order_keys = matched_order_keys(settings, &ad.matched_keywords);
-                let display_keywords = order_keys
-                    .iter()
-                    .map(|key| key.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let mut log = base_ad_log(
-                    "warning",
-                    "Order yuborilmadi: oq ro'yxat",
-                    format!("{} oq ro'yxatda bor. Order yuborilmaydi.", matched.display),
-                    ad,
-                    &display_keywords,
-                    Some(&matched),
+    for (keyword, ads) in by_keyword {
+        let mut orderable: Vec<&AdResult> = Vec::new();
+
+        for ad in &ads {
+            let target = ad
+                .target_channel
+                .clone()
+                .or_else(|| normalize_channel_ref(&ad.url));
+            if let Some(matched) =
+                find_list_match(target.as_deref(), &ad.url, &settings.whitelist_channels)
+            {
+                statuses.insert(
+                    ad.fingerprint.clone(),
+                    "OQ RO'YXAT kanali — order yuborilmaydi".to_string(),
                 );
-                log.raw_response = Some("SMMMAIN chaqirilmadi, sabab: oq ro'yxat".to_string());
-                logs.push(log);
+                // Oq ro'yxat logi faqat yangi (added) reklama uchun bir marta.
+                if added_fps.contains(ad.fingerprint.as_str()) {
+                    let mut log = base_ad_log(
+                        "warning",
+                        "Order yuborilmadi: oq ro'yxat",
+                        format!("{} oq ro'yxatda bor. Order yuborilmaydi.", matched.display),
+                        ad,
+                        &keyword,
+                        Some(&matched),
+                    );
+                    log.raw_response = Some("SMMMAIN chaqirilmadi, sabab: oq ro'yxat".to_string());
+                    logs.push(log);
+                }
+            } else {
+                orderable.push(ad);
             }
+        }
+
+        // Shu key bo'yicha order oladigan (oq ro'yxatda bo'lmagan) kanal yo'q.
+        if orderable.is_empty() {
             continue;
         }
 
-        // 2) Bu reklamaga order allaqachon yuborilgan — qayta yubormaymiz.
-        if state.store.is_ordered(&ad.fingerprint).await {
-            statuses.insert(ad.fingerprint.clone(), "order yuborilgan".to_string());
-            continue;
-        }
-
-        // Order kaliti (odatda bitta).
-        let Some(order_key) = matched_order_keys(settings, &ad.matched_keywords)
+        let Some(order_key) = matched_order_keys(settings, std::slice::from_ref(&keyword))
             .into_iter()
             .find(|key| !key.text.trim().is_empty())
         else {
-            statuses.insert(ad.fingerprint.clone(), "key qoidasi topilmadi".to_string());
+            for ad in &orderable {
+                statuses.insert(ad.fingerprint.clone(), "key qoidasi topilmadi".to_string());
+            }
             continue;
         };
 
-        // 3) QAT'IY QOIDA: shu kalit so'z bo'yicha oxirgi orderdan kamida 1 daqiqa
-        //    o'tgan bo'lishi shart (natijadan qat'i nazar). Slotni atomik band qilamiz.
+        // QAT'IY QOIDA: shu kalit so'z bo'yicha oxirgi orderdan kamida 1 daqiqa o'tishi
+        // shart (natijadan qat'i nazar). Slotni atomik band qilamiz.
         match state
             .store
             .reserve_keyword_order(&order_key.text, MIN_ORDER_GAP_SECS, now)
             .await
         {
             Ok(Some(remaining)) => {
-                statuses.insert(
-                    ad.fingerprint.clone(),
-                    format!("kalit so'z limiti — {remaining}s dan keyin order (1 daqiqada 1 marta)"),
-                );
+                for ad in &orderable {
+                    statuses.insert(
+                        ad.fingerprint.clone(),
+                        format!("1 daqiqa limiti — {remaining}s dan keyin order"),
+                    );
+                }
                 continue;
             }
-            Ok(None) => {} // ruxsat — davom etamiz
+            Ok(None) => {} // ruxsat — order yuboramiz
             Err(err) => {
-                statuses.insert(ad.fingerprint.clone(), format!("limit tekshiruvida xato: {err}"));
+                for ad in &orderable {
+                    statuses.insert(ad.fingerprint.clone(), format!("limit xato: {err}"));
+                }
                 continue;
             }
         }
 
-        let normalized_target = target.as_deref().and_then(normalize_channel_ref);
+        // Shu key uchun bitta order. Vakil kanal — birinchi order oladigan kanal.
+        let lead = orderable[0];
+        let channels_str = orderable
+            .iter()
+            .map(|ad| format!("@{}", ad.channel))
+            .collect::<Vec<_>>()
+            .join(", ");
         let matched = ChannelMatch {
-            display: normalized_target
-                .as_deref()
-                .map(display_channel)
-                .unwrap_or_else(|| ad.url.clone()),
-            order_link: normalized_target
-                .as_deref()
-                .map(|normalized| order_link(normalized, normalized))
-                .unwrap_or_else(|| ad.url.clone()),
+            display: channels_str.clone(),
+            order_link: format!("https://t.me/{}", lead.channel),
         };
 
         let mut log = base_ad_log(
             "info",
             "Order yuborilmoqda",
             format!(
-                "{} oq ro'yxatda emas. SMMMAIN service {}, link {}, quality {}.",
-                matched.display, order_key.service_id, order_key.text, order_key.quantity
+                "「{}」 bo'yicha oq ro'yxatda bo'lmagan kanal(lar): {channels_str}. SMMMAIN service {}, link {}, quality {}.",
+                keyword, order_key.service_id, order_key.text, order_key.quantity
             ),
-            ad,
+            lead,
             &order_key.text,
             Some(&matched),
         );
@@ -491,7 +504,7 @@ async fn process_scan_actions(
         log.service_id = Some(order_key.service_id);
         log.quantity = Some(order_key.quantity);
 
-        match state
+        let ad_status = match state
             .smmmain
             .send_order(order_key.service_id, &order_key.text, order_key.quantity)
             .await
@@ -500,14 +513,11 @@ async fn process_scan_actions(
                 log.level = "success".to_string();
                 log.title = "Order yuborildi".to_string();
                 log.message = format!(
-                    "{} uchun SMMMAIN order yuborildi. Link: {}. Service: {}, quality: {}.",
-                    matched.display, order_key.text, order_key.service_id, order_key.quantity
+                    "「{}」 bo'yicha SMMMAIN order yuborildi ({channels_str}). Link: {}, quality: {}.",
+                    keyword, order_key.text, order_key.quantity
                 );
                 log.order_id = outcome.order_id.clone();
                 log.raw_response = Some(outcome.raw_response);
-
-                // Shu reklamaga order berildi deb belgilaymiz — qayta yuborilmaydi.
-                let _ = state.store.mark_ordered(&ad.fingerprint).await;
                 let _ = state
                     .store
                     .upsert_order_record(OrderRecord {
@@ -520,21 +530,24 @@ async fn process_scan_actions(
                         last_checked_at: Some(now),
                     })
                     .await;
-                statuses.insert(ad.fingerprint.clone(), "order yuborilgan".to_string());
+                "order yuborildi".to_string()
             }
             Err(err) => {
                 log.level = "error".to_string();
                 log.title = "Order yuborishda xato".to_string();
                 log.message = format!(
-                    "{} topildi, lekin SMMMAIN order yuborilmadi. Link: {}. Xato: {err}. 1 daqiqadan keyin qayta uriniladi.",
-                    matched.display, order_key.text
+                    "「{}」 bo'yicha SMMMAIN order yuborilmadi. Link: {}. Xato: {err}.",
+                    keyword, order_key.text
                 );
                 log.raw_response = Some(err.to_string());
                 state.runtime.write().await.last_error = Some(log.message.clone());
-                statuses.insert(ad.fingerprint.clone(), format!("ORDER XATO: {err}"));
+                format!("ORDER XATO: {err}")
             }
-        }
+        };
 
+        for ad in &orderable {
+            statuses.insert(ad.fingerprint.clone(), ad_status.clone());
+        }
         logs.push(log);
     }
 
