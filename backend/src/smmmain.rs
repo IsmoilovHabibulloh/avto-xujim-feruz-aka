@@ -43,7 +43,7 @@ impl SmmMainService {
         quantity: u64,
     ) -> Result<SmmOrderOutcome> {
         if !self.is_configured() {
-            bail!("SMMMAIN_API_KEY .env ichida kiritilmagan");
+            bail!("BAZA kaliti (.env) kiritilmagan");
         }
 
         let service = if service_id == 0 {
@@ -67,23 +67,23 @@ impl SmmMainService {
             .form(&form)
             .send()
             .await
-            .context("SMMMAIN API ga ulanishda xatolik")?;
+            .context("BAZA API ga ulanishda xatolik")?;
 
         let status = response.status();
         let raw_response = response
             .text()
             .await
-            .context("SMMMAIN javobini o'qib bo'lmadi")?;
+            .context("BAZA javobini o'qib bo'lmadi")?;
 
         if !status.is_success() {
-            bail!("SMMMAIN HTTP {status}: {raw_response}");
+            bail!("BAZA HTTP {status}: {raw_response}");
         }
 
         let value = serde_json::from_str::<Value>(&raw_response)
-            .with_context(|| format!("SMMMAIN JSON javobi tushunarsiz: {raw_response}"))?;
+            .with_context(|| format!("BAZA JSON javobi tushunarsiz: {raw_response}"))?;
 
         if let Some(error) = value.get("error").and_then(Value::as_str) {
-            return Err(anyhow!("SMMMAIN xato qaytardi: {error}"));
+            return Err(anyhow!("BAZA xato qaytardi: {error}"));
         }
 
         // Muvaffaqiyatli javobda doim "order" id bo'ladi. Bo'lmasa, orderni
@@ -92,7 +92,7 @@ impl SmmMainService {
         let order_id = value.get("order").map(value_to_string);
         if order_id.is_none() {
             return Err(anyhow!(
-                "SMMMAIN order id qaytarmadi, javob: {raw_response}"
+                "BAZA order id qaytarmadi, javob: {raw_response}"
             ));
         }
 
@@ -104,7 +104,7 @@ impl SmmMainService {
 
     pub async fn balance(&self) -> Result<SmmBalanceOutcome> {
         if !self.is_configured() {
-            bail!("SMMMAIN_API_KEY .env ichida kiritilmagan");
+            bail!("BAZA kaliti (.env) kiritilmagan");
         }
 
         let form = [("key", self.api_key.trim()), ("action", "balance")];
@@ -114,23 +114,23 @@ impl SmmMainService {
             .form(&form)
             .send()
             .await
-            .context("SMMMAIN balans API ga ulanishda xatolik")?;
+            .context("BAZA balans API ga ulanishda xatolik")?;
 
         let status = response.status();
         let raw_response = response
             .text()
             .await
-            .context("SMMMAIN balans javobini o'qib bo'lmadi")?;
+            .context("BAZA balans javobini o'qib bo'lmadi")?;
 
         if !status.is_success() {
-            bail!("SMMMAIN balans HTTP {status}: {raw_response}");
+            bail!("BAZA balans HTTP {status}: {raw_response}");
         }
 
         let value = serde_json::from_str::<Value>(&raw_response)
-            .with_context(|| format!("SMMMAIN balans JSON javobi tushunarsiz: {raw_response}"))?;
+            .with_context(|| format!("BAZA balans JSON javobi tushunarsiz: {raw_response}"))?;
 
         if let Some(error) = value.get("error").and_then(Value::as_str) {
-            return Err(anyhow!("SMMMAIN balans xato qaytardi: {error}"));
+            return Err(anyhow!("BAZA balans xato qaytardi: {error}"));
         }
 
         Ok(SmmBalanceOutcome {

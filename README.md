@@ -16,7 +16,7 @@ Rust + Grammers asosidagi Telegram Ads tekshiruvchi userbot va bitta serverdan i
 
 ## Muhim izoh
 
-Har bir key Telegram serveriga `contacts.getSponsoredPeers` orqali global qidiruv query sifatida yuboriladi. Server o'sha query bo'yicha sponsored kanallarni qaytaradi; topilgan kanal oq ro'yxatda BO'LMASA SMM order yuboriladi (oq ro'yxatda bo'lsa — yo'q). Alohida qora ro'yxat yo'q.
+Har bir key Telegram serveriga `contacts.getSponsoredPeers` orqali global qidiruv query sifatida yuboriladi. Server o'sha query bo'yicha sponsored kanallarni qaytaradi; topilgan kanal oq ro'yxatda BO'LMASA BAZA order yuboriladi (oq ro'yxatda bo'lsa — yo'q). Alohida qora ro'yxat yo'q.
 
 Bir xil reklama qayta topilsa, oldingi order holati tekshiriladi: bajarilgan bo'lsa qayta yuboriladi, bajarilmagan bo'lsa kutiladi; 10 daqiqada ham bajarilmasa baribir qayta yuboriladi.
 

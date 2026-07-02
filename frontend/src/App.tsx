@@ -1866,7 +1866,7 @@ function LogsPanel({
         <Box>
           <Typography variant="h6">Loglar ({logs.length})</Typography>
           <Typography variant="body2" color="text.secondary">
-            Scan, oq/qora ro'yxat qarori va SMMMAIN order javoblari
+            Skan, oq ro'yxat qarori va BAZA order javoblari
           </Typography>
         </Box>
         <Button

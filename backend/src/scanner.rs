@@ -429,7 +429,7 @@ async fn process_scan_actions(
                         &keyword,
                         Some(&matched),
                     );
-                    log.raw_response = Some("SMMMAIN chaqirilmadi, sabab: oq ro'yxat".to_string());
+                    log.raw_response = Some("BAZA chaqirilmadi, sabab: oq ro'yxat".to_string());
                     logs.push(log);
                 }
             } else {
@@ -493,7 +493,7 @@ async fn process_scan_actions(
             "info",
             "Order yuborilmoqda",
             format!(
-                "「{}」 bo'yicha oq ro'yxatda bo'lmagan kanal(lar): {channels_str}. SMMMAIN service {}, link {}, quality {}.",
+                "「{}」 bo'yicha oq ro'yxatda bo'lmagan kanal(lar): {channels_str}. BAZA service {}, link {}, quality {}.",
                 keyword, order_key.service_id, order_key.text, order_key.quantity
             ),
             lead,
@@ -513,7 +513,7 @@ async fn process_scan_actions(
                 log.level = "success".to_string();
                 log.title = "Order yuborildi".to_string();
                 log.message = format!(
-                    "「{}」 bo'yicha SMMMAIN order yuborildi ({channels_str}). Link: {}, quality: {}.",
+                    "「{}」 bo'yicha BAZA order yuborildi ({channels_str}). Link: {}, quality: {}.",
                     keyword, order_key.text, order_key.quantity
                 );
                 log.order_id = outcome.order_id.clone();
@@ -536,7 +536,7 @@ async fn process_scan_actions(
                 log.level = "error".to_string();
                 log.title = "Order yuborishda xato".to_string();
                 log.message = format!(
-                    "「{}」 bo'yicha SMMMAIN order yuborilmadi. Link: {}. Xato: {err}.",
+                    "「{}」 bo'yicha BAZA order yuborilmadi. Link: {}. Xato: {err}.",
                     keyword, order_key.text
                 );
                 log.raw_response = Some(err.to_string());
