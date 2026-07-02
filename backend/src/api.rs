@@ -344,16 +344,17 @@ async fn send_manual_order(
 
     let quantity = rule.order_quantity.max(1);
 
-    // QAT'IY QOIDA: shu kalit so'z bo'yicha oxirgi orderdan kamida 1 daqiqa o'tgan
-    // bo'lishi shart (qo'lda ham, avtomatik ham — bir xil limit).
+    // QAT'IY QOIDA: shu kalit so'z bo'yicha oxirgi orderdan kamida MIN_ORDER_GAP_SECS
+    // o'tgan bo'lishi shart (qo'lda ham, avtomatik ham — bir xil limit).
     let now = Utc::now();
+    let gap = crate::models::MIN_ORDER_GAP_SECS;
     if let Some(remaining) = state
         .store
-        .reserve_keyword_order(&rule.text, crate::models::MIN_ORDER_GAP_SECS, now)
+        .reserve_keyword_order(&rule.text, gap, now)
         .await?
     {
         return Err(ApiError::bad_request(format!(
-            "Kalit so'z limiti: \"{}\" uchun {remaining} sekunddan keyin order yuboriladi (1 daqiqada 1 marta).",
+            "Kalit so'z limiti: \"{}\" uchun {remaining} sekunddan keyin order yuboriladi (har {gap}s da 1 marta).",
             rule.text
         )));
     }

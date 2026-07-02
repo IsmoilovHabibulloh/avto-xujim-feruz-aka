@@ -6,8 +6,8 @@ pub const DEFAULT_SMMMAIN_SERVICE_ID: u64 = 39;
 
 /// Bitta kalit so'z bo'yicha ketma-ket buyurtmalar orasidagi eng kam vaqt (sekund).
 /// Qat'iy qoida: natija (muvaffaqiyat/xato) qanday bo'lishidan qat'i nazar, bir key
-/// bo'yicha 1 daqiqada ko'pi bilan 1 marta order yuboriladi.
-pub const MIN_ORDER_GAP_SECS: i64 = 60;
+/// bo'yicha 120 sekundda ko'pi bilan 1 marta order yuboriladi.
+pub const MIN_ORDER_GAP_SECS: i64 = 120;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {

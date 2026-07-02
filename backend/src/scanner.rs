@@ -463,7 +463,9 @@ async fn process_scan_actions(
                 for ad in &orderable {
                     statuses.insert(
                         ad.fingerprint.clone(),
-                        format!("1 daqiqa limiti — {remaining}s dan keyin order"),
+                        format!(
+                            "Limit — {remaining}s dan keyin order (har {MIN_ORDER_GAP_SECS}s da 1 marta)"
+                        ),
                     );
                 }
                 continue;
